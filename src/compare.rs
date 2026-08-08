@@ -186,12 +186,16 @@ fn compare_impl<A: Encoding, B: Encoding>(
 				b = &b[written..];
 				continue;
 			}
-		} else if for_eq && simd_ok && A::KIND == crate::Kind::Utf16 && B::KIND == crate::Kind::Utf8
-			&& let Some((read, written)) = transcode_equal_stream::<B, A>(b, a, caseless) {
-				a = &a[written..];
-				b = &b[read..];
-				continue;
-			}
+		} else if for_eq
+			&& simd_ok
+			&& A::KIND == crate::Kind::Utf16
+			&& B::KIND == crate::Kind::Utf8
+			&& let Some((read, written)) = transcode_equal_stream::<B, A>(b, a, caseless)
+		{
+			a = &a[written..];
+			b = &b[read..];
+			continue;
+		}
 
 		// Scalar ASCII unit. Raw units only equal codepoints when both
 		// encodings are native byte order, so foreign operands always take

@@ -109,7 +109,9 @@ fn emit_json(title: &str, impls: &[&str], rows: &[(&str, Vec<f64>)]) {
 					out.push('\\');
 					out.push(c);
 				},
-				c if (c as u32) < 0x20 => write!(out, "\\u{:04x}", c as u32).expect("writing to String cannot fail"),
+				c if (c as u32) < 0x20 => {
+					write!(out, "\\u{:04x}", c as u32).expect("writing to String cannot fail");
+				},
 				c => out.push(c),
 			}
 		}
