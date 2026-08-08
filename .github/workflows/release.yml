@@ -1,0 +1,22 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      # Required for crates.io Trusted Publishing (OIDC token exchange).
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      # Installs the nightly channel pinned by rust-toolchain.toml.
+      - run: rustup toolchain install
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

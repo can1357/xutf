@@ -1,0 +1,163 @@
+[package]
+name = "xutf"
+version = "0.1.0"
+edition = "2024"
+description = "Permissive UTF-8/16/32 transcoding, comparison and BOM detection with SIMD ASCII fast paths"
+license = "MIT"
+repository = "https://github.com/can1357/xutf"
+keywords = ["utf-8", "utf-16", "simd", "unicode", "transcoding"]
+categories = ["encoding", "text-processing", "no-std", "internationalization"]
+# Keep the published package lean: bench data/figures, fuzz corpus and
+# generator scripts stay in the repo only.
+exclude = ["benches/data", "fuzz", "scripts", ".github"]
+autobenches = false
+
+[profile.release]
+lto = "thin"
+
+[dev-dependencies]
+divan = "0.1"
+encoding_rs = "0.8.35"
+rayon = "1.10"
+simdutf = "0.7.0"
+textwrap = "0.16"
+unicode-segmentation = "1.13"
+unicode-width = "0.2"
+
+[lib]
+bench = false
+
+[[bench]]
+name = "throughput"
+harness = false
+
+[[bench]]
+name = "graphemes"
+harness = false
+
+[[bench]]
+name = "width"
+harness = false
+
+[[bench]]
+name = "truncate"
+harness = false
+
+[[bench]]
+name = "wrap"
+harness = false
+
+[[bench]]
+name = "profile"
+harness = false
+
+
+[lints.rust]
+# ──────────────────────────────────────────────────────────────────────────────
+# Rust Lint Levels
+# ──────────────────────────────────────────────────────────────────────────────
+mismatched_lifetime_syntaxes = "allow"
+
+[lints.clippy]
+# ──────────────────────────────────────────────────────────────────────────────
+# Base Lint Levels
+# ──────────────────────────────────────────────────────────────────────────────
+all = { level = "warn", priority = -1 }
+correctness = { level = "deny", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Meta: Lint Attributes
+# ──────────────────────────────────────────────────────────────────────────────
+allow_attributes_without_reason = "warn" # Enforce reason for all #[allow]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Safety & Unsafe Code
+# ──────────────────────────────────────────────────────────────────────────────
+borrow_as_ptr = "allow"
+cast_ptr_alignment = "allow"
+ptr_as_ptr = "allow"
+ref_as_ptr = "allow"
+undocumented_unsafe_blocks = "warn"
+unsafe_derive_deserialize = "allow"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Numeric Casts & Conversions
+# ──────────────────────────────────────────────────────────────────────────────
+cast_lossless = "allow"            # u32 as u64 - 'as' is cleaner than From
+cast_possible_truncation = "allow" # u64 as u32 - often intentional
+cast_possible_wrap = "allow"       # u32 as i32 - can be intentional
+cast_precision_loss = "allow"      # f64 as f32 - sometimes acceptable
+cast_sign_loss = "allow"           # i32 as u32 - sometimes needed
+tuple_array_conversions = "allow"  # Non-Into conversion is more clear
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Floating Point
+# ──────────────────────────────────────────────────────────────────────────────
+float_cmp = "allow" # Tests mostly do this + we know what we're doing
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Functions & Closures
+# ──────────────────────────────────────────────────────────────────────────────
+inline_always = "allow"                      # Needed for performance-critical code
+must_use_candidate = "allow"                 # Not every function needs #[must_use]
+needless_pass_by_value = "allow"
+redundant_closure_for_method_calls = "allow" # .map(ToString::to_string) can be clearer
+return_self_not_must_use = "allow"           # Builder pattern methods
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Structs & Types
+# ──────────────────────────────────────────────────────────────────────────────
+inconsistent_struct_constructor = "allow"
+missing_fields_in_debug = "allow"         # Not every field needs to be in Debug output
+struct_excessive_bools = "allow"          # Usually with builders
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Pattern Matching
+# ──────────────────────────────────────────────────────────────────────────────
+match_same_arms = "allow"                    # Can be intentional for clarity
+match_wildcard_for_single_variants = "allow" # _ can be clearer than listing variants
+option_if_let_else = "allow"                 # match/if-let-else often clearer
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Imports & Module Organization
+# ──────────────────────────────────────────────────────────────────────────────
+enum_glob_use = "allow"
+items_after_statements = "allow" # Sometimes more readable
+wildcard_imports = "allow"       # Cleaner for preludes and test modules
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Variables & Type Inference
+# ──────────────────────────────────────────────────────────────────────────────
+let_underscore_untyped = "allow" # Type obvious from context
+similar_names = "allow"          # 'req' and 'res' together are fine
+many_single_char_names = "allow" # a..h vector registers in kernels are clearer than prose names
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Literals & Formatting
+# ──────────────────────────────────────────────────────────────────────────────
+tabs_in_doc_comments = "allow" # rustfmt (hard_tabs + format_code_in_doc_comments) emits them
+unreadable_literal = "allow"   # 10_000_000 vs 0xDEADBEEF is context dependent
+verbose_bit_mask = "allow"     # Explicit bit patterns can be clearer than hex
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Code Style
+# ──────────────────────────────────────────────────────────────────────────────
+default_trait_access = "allow"        # Default::default() sometimes clearer
+significant_drop_tightening = "allow" # We pay attention to this already
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Documentation
+# ──────────────────────────────────────────────────────────────────────────────
+missing_errors_doc = "allow" # Documenting every error return is often redundant
+missing_panics_doc = "allow" # Not every panic needs docs, especially assert!
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Complexity
+# ──────────────────────────────────────────────────────────────────────────────
+too_many_arguments = "allow" # Argument count is rarely the real complexity signal
+too_many_lines = "allow"     # Arbitrary limits don't account for necessary complexity

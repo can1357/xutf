@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu = x86-64 kernels, macos = aarch64/NEON kernels.
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      # Installs the nightly channel pinned by rust-toolchain.toml.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --release
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install && rustup component add clippy rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      # correctness/suspicious are deny-level in Cargo.toml; pedantic/nursery
+      # stay warnings by design, so no blanket -D warnings here.
+      - run: cargo clippy --all-targets

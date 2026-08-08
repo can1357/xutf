@@ -1,0 +1,31 @@
+[package]
+name = "xutf-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+unicode-segmentation = "1.13"
+xutf = { path = ".." }
+
+[[bin]]
+name = "codec"
+path = "fuzz_targets/codec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text"
+path = "fuzz_targets/text.rs"
+test = false
+doc = false
+bench = false
+
+# Keep fuzz-only dependencies and build settings isolated from the library.
+[workspace]
+members = ["."]

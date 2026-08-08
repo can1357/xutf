@@ -1,0 +1,3 @@
+[toolchain]
+# `core::simd` (portable SIMD → LLVM vector extensions) is nightly-only.
+channel = "nightly"
