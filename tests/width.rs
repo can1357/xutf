@@ -1,5 +1,5 @@
 use unicode_width::UnicodeWidthStr;
-use xutf::{Utf8, Utf16, Utf32, width, width_str};
+use xutf::{Utf8, Utf16, Utf32, width, width_char, width_str, width_within, width_within_str};
 
 const CORPUS: &[&str] = &[
 	"plain printable ASCII 0123456789 !@#$%^&*()",
@@ -120,5 +120,69 @@ fn tui_reference_widths() {
 		("", 0),
 	] {
 		assert_eq!(width_str(s), expected, "{s:?}");
+	}
+}
+
+#[test]
+fn bounded_width_matches_unbounded_measurement() {
+	for (s, budgets) in [
+		("", &[0, 1][..]),
+		("ascii", &[0, 4, 5, 6]),
+		("a somewhat longer printable ASCII line", &[0, 8, 20, 38, 39]),
+		("漢字a", &[0, 1, 2, 4, 5]),
+		("👨‍👩‍👧 and text", &[0, 1, 2, 5, 10]),
+		("ab\u{301}", &[0, 1, 2]),
+	] {
+		let expected = width_str(s);
+		for &max_width in budgets {
+			let bounded = width_within_str(s, max_width);
+			assert_eq!(bounded, (expected <= max_width).then_some(expected), "{s:?} at {max_width}");
+			assert_eq!(width_within::<Utf8>(s.as_bytes(), max_width), bounded, "{s:?} at {max_width}");
+		}
+	}
+
+	let long = "x".repeat(1024 * 1024);
+	assert_eq!(width_within_str(&long, 80), None);
+}
+
+#[test]
+fn bounded_width_includes_zero_width_tail_at_edge() {
+	assert_eq!(width_within_str("", 0), Some(0));
+	assert_eq!(width_within_str("a", 0), None);
+	assert_eq!(width_within_str("ab\u{301}", 2), Some(2));
+	assert_eq!(width_within_str("ab\u{301}", 1), None);
+
+	let exact = "界e\u{301}😀";
+	let exact_width = width_str(exact);
+	assert_eq!(width_within_str(exact, exact_width), Some(exact_width));
+}
+
+#[test]
+fn bounded_width_matches_utf16() {
+	let sample = "ASCII 漢字 e\u{301} 👨‍👩‍👧";
+	let utf16: Vec<u16> = sample.encode_utf16().collect();
+	for max_width in 0..=width_str(sample) + 1 {
+		assert_eq!(
+			width_within::<Utf16<false>>(&utf16, max_width),
+			width_within_str(sample, max_width),
+			"budget {max_width}"
+		);
+	}
+}
+
+#[test]
+fn standalone_character_widths() {
+	for (c, expected) in [
+		('a', 1),
+		('\t', 0),
+		('\n', 0),
+		('\r', 0),
+		('中', 2),
+		('\u{301}', 0),
+		('\u{2764}', 1),
+		('\u{1f600}', 2),
+		('\u{200d}', 0),
+	] {
+		assert_eq!(width_char(c), expected, "{c:?}");
 	}
 }

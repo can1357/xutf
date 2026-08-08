@@ -1,7 +1,7 @@
 //! Behavioral and differential tests for extended grapheme clusters.
 
 use unicode_segmentation::UnicodeSegmentation;
-use xutf::{Utf8, Utf16, Utf32, graphemes, graphemes_str};
+use xutf::{Encoding, Utf8, Utf16, Utf32, grapheme_indices_str, graphemes, graphemes_str};
 
 const CORPUS: &[&str] = &[
 	"",
@@ -24,6 +24,94 @@ fn assert_same_segmentation(s: &str) {
 	let actual: Vec<&str> = graphemes_str(s).collect();
 	let expected: Vec<&str> = UnicodeSegmentation::graphemes(s, true).collect();
 	assert_eq!(actual, expected, "segmentation differed for {s:?}");
+
+	let mut reversed: Vec<&str> = graphemes_str(s).rev().collect();
+	reversed.reverse();
+	assert_eq!(reversed, expected, "reverse segmentation differed for {s:?}");
+
+	assert_eq!(graphemes_str(s).len(), expected.len(), "exact len differed for {s:?}");
+}
+
+fn assert_reverse_matches_forward<E: Encoding>(units: &[E::Unit])
+where
+	E::Unit: core::fmt::Debug,
+{
+	let forward: Vec<(Vec<E::Unit>, usize)> = graphemes::<E>(units)
+		.map(|g| (g.units.to_vec(), g.width))
+		.collect();
+	let mut backward: Vec<(Vec<E::Unit>, usize)> = graphemes::<E>(units)
+		.rev()
+		.map(|g| (g.units.to_vec(), g.width))
+		.collect();
+	backward.reverse();
+	assert_eq!(backward, forward);
+	assert_eq!(graphemes::<E>(units).len(), forward.len());
+}
+
+#[test]
+fn reverse_iteration_matches_forward_across_encodings() {
+	for &s in CORPUS {
+		assert_reverse_matches_forward::<Utf8>(s.as_bytes());
+
+		let native16: Vec<u16> = s.encode_utf16().collect();
+		assert_reverse_matches_forward::<Utf16<false>>(&native16);
+		let foreign16: Vec<u16> = native16.iter().map(|u| u.swap_bytes()).collect();
+		assert_reverse_matches_forward::<Utf16<true>>(&foreign16);
+
+		let native32: Vec<u32> = s.chars().map(u32::from).collect();
+		assert_reverse_matches_forward::<Utf32<false>>(&native32);
+		let foreign32: Vec<u32> = native32.iter().map(|u| u.swap_bytes()).collect();
+		assert_reverse_matches_forward::<Utf32<true>>(&foreign32);
+	}
+}
+
+#[test]
+fn double_ended_iteration_meets_in_the_middle() {
+	for &s in CORPUS {
+		let expected: Vec<&str> = graphemes_str(s).collect();
+		let mut iter = graphemes_str(s);
+		let mut front = Vec::new();
+		let mut back = Vec::new();
+		while let Some(g) = iter.next() {
+			front.push(g);
+			match iter.next_back() {
+				Some(g) => back.push(g),
+				None => break,
+			}
+		}
+		back.reverse();
+		front.extend(back);
+		assert_eq!(front, expected, "meet-in-middle differed for {s:?}");
+	}
+}
+
+#[test]
+fn reverse_iteration_is_permissive_on_malformed_input() {
+	assert!(graphemes::<Utf8>(&[]).next_back().is_none());
+
+	let cases: &[&[u8]] =
+		&[&[0x80], &[0xff, 0xfe, 0x80], &[0xe4, 0xb8], &[0xf0, 0x90, 0x80], &[b'a', 0x80, b'b']];
+	for &input in cases {
+		let consumed: usize = graphemes::<Utf8>(input).rev().map(|g| g.units.len()).sum();
+		assert_eq!(consumed, input.len(), "reverse dropped units for {input:?}");
+	}
+
+	let surrogate = [0xd800u16, 0x41];
+	let consumed: usize = graphemes::<Utf16<false>>(&surrogate)
+		.rev()
+		.map(|g| g.units.len())
+		.sum();
+	assert_eq!(consumed, surrogate.len());
+}
+
+#[test]
+fn grapheme_indices_reverse_reports_forward_offsets() {
+	for &s in CORPUS {
+		let forward: Vec<(usize, &str)> = grapheme_indices_str(s).collect();
+		let mut backward: Vec<(usize, &str)> = grapheme_indices_str(s).rev().collect();
+		backward.reverse();
+		assert_eq!(backward, forward, "indices differed for {s:?}");
+	}
 }
 
 #[test]
@@ -172,4 +260,63 @@ fn cloned_iterator_resumes_independently() {
 	assert_eq!(cloned.next(), Some("🇺🇸"));
 	assert_eq!(original.collect::<Vec<_>>(), vec!["e\u{301}"]);
 	assert_eq!(cloned.collect::<Vec<_>>(), vec!["e\u{301}"]);
+}
+
+#[test]
+fn grapheme_indices_str_report_byte_offsets() {
+	let input = "ASCII 界 👨‍👩‍👧‍👦 🇺🇸\r\ne\u{301}";
+	let indexed: Vec<_> = xutf::grapheme_indices_str(input).collect();
+	let mut cursor = 0;
+	for &(at, cluster) in &indexed {
+		assert_eq!(at, cursor);
+		assert_eq!(&input[at..at + cluster.len()], cluster);
+		cursor += cluster.len();
+	}
+	assert_eq!(cursor, input.len());
+	assert_eq!(
+		indexed
+			.iter()
+			.map(|(_, cluster)| *cluster)
+			.collect::<String>(),
+		input
+	);
+
+	let clusters: Vec<_> = graphemes_str(input).collect();
+	assert_eq!(
+		indexed
+			.iter()
+			.map(|(_, cluster)| *cluster)
+			.collect::<Vec<_>>(),
+		clusters
+	);
+}
+
+#[test]
+fn grapheme_indices_count_utf16_code_units() {
+	let input = "A😀界👨‍👩‍👧‍👦e\u{301}";
+	let units: Vec<u16> = input.encode_utf16().collect();
+	let actual: Vec<_> = xutf::grapheme_indices::<Utf16<false>>(&units)
+		.map(|(at, cluster)| (at, String::from_utf16(cluster.units).unwrap()))
+		.collect();
+	let expected: Vec<_> = UnicodeSegmentation::grapheme_indices(input, true)
+		.map(|(byte_at, cluster)| (input[..byte_at].encode_utf16().count(), cluster.to_owned()))
+		.collect();
+	assert_eq!(actual, expected);
+}
+
+#[test]
+fn grapheme_control_status_uses_the_base_codepoint() {
+	for input in ["\r", "\n", "\r\n", "\x07", "\u{9b}"] {
+		let cluster = graphemes::<Utf8>(input.as_bytes()).next().unwrap();
+		assert!(cluster.is_control(), "{input:?} should be a control");
+	}
+	for input in ["a", "\u{301}", "\u{200d}", "\u{200b}"] {
+		let cluster = graphemes::<Utf8>(input.as_bytes()).next().unwrap();
+		assert!(!cluster.is_control(), "{input:?} should not be a control");
+	}
+
+	let controls: Vec<_> = graphemes::<Utf8>(b"a\r\nb")
+		.map(|cluster| cluster.is_control())
+		.collect();
+	assert_eq!(controls, [false, true, false]);
 }

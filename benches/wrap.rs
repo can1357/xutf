@@ -5,7 +5,7 @@
 
 use divan::Bencher;
 use rayon::prelude::*;
-use xutf::{Utf16, wrap, wrap_str};
+use xutf::Text;
 
 mod common;
 use common::{build_input, measure, print_ratio_table};
@@ -15,17 +15,34 @@ common::bench_main!();
 const TARGET: usize = 1024 * 1024;
 
 fn utf8_checksum(input: &str, width: usize) -> usize {
-	let (lines, bytes) = wrap_str(input, width)
+	let (lines, bytes) = input
+		.wrap(width)
 		.fold((0usize, 0usize), |(count, bytes), line| (count + 1, bytes + line.len()));
 	lines.wrapping_add(bytes)
 }
 
+/// Sums byte offset, display width, and byte length for each line produced by
+/// `wrap_measured`.
+fn utf8_measured_checksum(input: &str, width: usize) -> usize {
+	input
+		.wrap_measured(width)
+		.fold(0usize, |acc, line| acc.wrapping_add(line.at + line.width + line.as_str().len()))
+}
+
+/// Sums display width computed via `visible_width` for each line produced by
+/// `wrap`.
+fn utf8_remeasure_checksum(input: &str, width: usize) -> usize {
+	input
+		.wrap(width)
+		.fold(0usize, |acc, line| acc.wrapping_add(line.visible_width()))
+}
+
 fn utf16_checksum(input: &[u16], width: usize) -> usize {
-	let (lines, bytes) = wrap::<Utf16<false>>(input, width)
+	let (lines, bytes) = input
+		.wrap(width)
 		.fold((0usize, 0usize), |(count, bytes), line| (count + 1, bytes + line.len() * 2));
 	lines.wrapping_add(bytes)
 }
-
 fn run_ratio_table() {
 	let inputs = [
 		("ascii", build_input("The quick brown fox jumps over the lazy dog. ", TARGET)),
@@ -46,6 +63,8 @@ fn run_ratio_table() {
 				let utf16: Vec<u16> = input.encode_utf16().collect();
 				(*name, vec![
 					measure(input.len(), || utf8_checksum(input, width)),
+					measure(input.len(), || utf8_measured_checksum(input, width)),
+					measure(input.len(), || utf8_remeasure_checksum(input, width)),
 					measure(input.len(), || {
 						let wrapped = textwrap::wrap(input.as_str(), width);
 						let (lines, bytes) = wrapped
@@ -61,7 +80,7 @@ fn run_ratio_table() {
 			.collect();
 		print_ratio_table(
 			&format!("word wrap at {width} columns"),
-			&["xutf utf8", "textwrap", "xutf utf16"],
+			&["xutf utf8", "xutf measured", "xutf + remeasure", "textwrap", "xutf utf16"],
 			&rows,
 		);
 	}
@@ -81,6 +100,22 @@ mod ascii_80 {
 		bencher
 			.counter(divan::counter::BytesCount::of_slice(s.as_bytes()))
 			.bench_local(|| utf8_checksum(&s, 80));
+	}
+
+	#[divan::bench]
+	fn xutf_measured(bencher: Bencher) {
+		let s = input();
+		bencher
+			.counter(divan::counter::BytesCount::of_slice(s.as_bytes()))
+			.bench_local(|| utf8_measured_checksum(&s, 80));
+	}
+
+	#[divan::bench]
+	fn xutf_remeasure(bencher: Bencher) {
+		let s = input();
+		bencher
+			.counter(divan::counter::BytesCount::of_slice(s.as_bytes()))
+			.bench_local(|| utf8_remeasure_checksum(&s, 80));
 	}
 
 	#[divan::bench]
@@ -121,6 +156,22 @@ mod cjk_80 {
 		bencher
 			.counter(divan::counter::BytesCount::of_slice(s.as_bytes()))
 			.bench_local(|| utf8_checksum(&s, 80));
+	}
+
+	#[divan::bench]
+	fn xutf_measured(bencher: Bencher) {
+		let s = input();
+		bencher
+			.counter(divan::counter::BytesCount::of_slice(s.as_bytes()))
+			.bench_local(|| utf8_measured_checksum(&s, 80));
+	}
+
+	#[divan::bench]
+	fn xutf_remeasure(bencher: Bencher) {
+		let s = input();
+		bencher
+			.counter(divan::counter::BytesCount::of_slice(s.as_bytes()))
+			.bench_local(|| utf8_remeasure_checksum(&s, 80));
 	}
 
 	#[divan::bench]

@@ -14,7 +14,7 @@
 set -eu
 
 cd "$(dirname "$0")/.."
-BENCHES=(--bench graphemes --bench width --bench truncate --bench wrap --bench throughput)
+BENCHES=(--bench graphemes --bench width --bench truncate --bench wrap --bench strip_ansi --bench throughput)
 RUSTFLAGS="-C target-cpu=native"
 export RUSTFLAGS
 
@@ -54,7 +54,7 @@ IFS= read -r -d "" label
 cd /tmp/xutf-bench
 rm -f /tmp/xutf-bench.jsonl
 RUSTFLAGS="$rustflags" BENCH_JSON=/tmp/xutf-bench.jsonl BENCH_HOST="$label" \
-	cargo bench -q --bench graphemes --bench width --bench truncate --bench wrap --bench throughput
+	cargo bench -q --bench graphemes --bench width --bench truncate --bench wrap --bench strip_ansi --bench throughput
 '"'"''
 	scp -q "$host":/tmp/xutf-bench.jsonl "$out"
 done

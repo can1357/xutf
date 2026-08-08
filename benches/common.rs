@@ -66,6 +66,48 @@ pub fn measure(bytes: usize, mut f: impl FnMut() -> usize) -> f64 {
 	bytes as f64 / best / 1e9
 }
 
+/// Measures a mutating operation while excluding per-iteration input setup.
+///
+/// Setup and destruction happen outside each timed interval; this mirrors
+/// Divan's generated-input benchmarks without retaining a batch of large
+/// inputs in memory.
+pub fn measure_with_setup<I>(
+	bytes: usize,
+	mut setup: impl FnMut() -> I,
+	mut f: impl FnMut(&mut I) -> usize,
+) -> f64 {
+	for _ in 0..3 {
+		let mut input = setup();
+		black_box(f(&mut input));
+	}
+	let mut iters = 1u32;
+	loop {
+		let mut elapsed = 0.0;
+		for _ in 0..iters {
+			let mut input = setup();
+			let t = Instant::now();
+			black_box(f(&mut input));
+			elapsed += t.elapsed().as_secs_f64();
+		}
+		if elapsed >= FAST.warmup_secs || iters >= 1 << 16 {
+			break;
+		}
+		iters *= 4;
+	}
+	let mut best = f64::INFINITY;
+	for _ in 0..FAST.runs {
+		let mut elapsed = 0.0;
+		for _ in 0..iters {
+			let mut input = setup();
+			let t = Instant::now();
+			black_box(f(&mut input));
+			elapsed += t.elapsed().as_secs_f64();
+		}
+		best = best.min(elapsed / f64::from(iters));
+	}
+	bytes as f64 / best / 1e9
+}
+
 /// Boilerplate main entry point for benchmark binaries.
 /// Runs Divan benchmarks if DIVAN env var is set or `--divan` arg is passed;
 /// otherwise runs the custom ratio table benchmark.

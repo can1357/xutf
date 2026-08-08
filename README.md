@@ -5,7 +5,7 @@
 
 Fast, permissive UTF-8 / UTF-16 / UTF-32 transcoding, comparison and BOM
 detection — plus allocation-free terminal text primitives (graphemes, visible
-width, truncation, word wrap).
+width, truncation, word wrap, in-place ANSI stripping).
 
 Decoding never fails: truncated sequences, lone surrogates, garbage in →
 defined output out. Safe to point at untrusted bytes.
@@ -28,9 +28,9 @@ roughly 1.5–2× ahead on typical text, and **3–10×** ahead on emoji-heavy i
   parameter (`Utf16Be`, `Utf32Le`, …); the byte swap is folded into the kernels.
 - **Cross-encoding comparison** — equality, ordering, and ASCII case-folding
   between different encodings, no conversion needed.
-- **Terminal text on UTF-8 _or_ UTF-16** — UAX #29 grapheme clusters that
-  carry their cell width, UAX #11 width, cluster-safe truncate and word wrap.
-  Everything returns borrowed slices.
+- **Terminal text on UTF-8, UTF-16, or UTF-32** — UAX #29 grapheme clusters,
+  UAX #11 width, cluster-safe truncate and word wrap, plus SIMD ANSI/VT
+  stripping that reuses owned buffers and compacts mutable slices in place.
 - **BOM detection** — decode whatever the BOM says, defaulting to UTF-8.
 - **`#![no_std]`**, zero runtime dependencies, Unicode 17.0 tables generated
   from the UCD.
@@ -227,6 +227,39 @@ tables; regenerate with `scripts/bench_hosts.sh` + `scripts/bench_viz.py`.
 </details>
 <!-- benches:end -->
 
+**ANSI stripping, Apple M4 Max** (GB/s)
+
+| input   | xutf str          | strip-ansi           |
+| ------- | ----------------- | -------------------- |
+| plain   | 34.6 GB/s (1.00x) | 25.3 GB/s (▼ +36.7%) |
+| sgr     | 1.9 GB/s (1.00x)  | 0.5 GB/s (▼ +293.1%) |
+| dense   | 1.0 GB/s (1.00x)  | 0.2 GB/s (▼ +321.7%) |
+| unicode | 1.8 GB/s (1.00x)  | 0.4 GB/s (▼ +312.9%) |
+
+**NFC/NFD normalization, Apple M4 Max** (GB/s)
+
+| input              | xutf in-place     | unicode-normalization  |
+| ------------------ | ----------------- | ---------------------- |
+| NFC ascii          | 42.7 GB/s (1.00x) | 0.1 GB/s (▼ +30258.0%) |
+| NFC reversed marks | 0.3 GB/s (1.00x)  | 0.2 GB/s (▼ +32.0%)    |
+| NFC mixed          | 0.3 GB/s (1.00x)  | 0.2 GB/s (▼ +96.8%)    |
+| NFD nfc-latin      | 0.3 GB/s (1.00x)  | 0.2 GB/s (▼ +51.4%)    |
+| NFD reversed marks | 0.3 GB/s (1.00x)  | 0.3 GB/s (▼ +3.9%)     |
+| NFD mixed          | 0.3 GB/s (1.00x)  | 0.3 GB/s (▼ +27.6%)    |
+
+**Additional terminal APIs, Apple M4 Max**
+
+| API                   | cases                 | latency / throughput | comparison                                       |
+| --------------------- | --------------------- | -------------------- | ------------------------------------------------ |
+| `truncate_measured`   | 80-column cuts        | ~5.1–221 ns / call   | within 7.1% of `truncate_width`; width included  |
+| `skip_columns`        | CJK/emoji half cuts   | 0.9–2.1 GB/s         | 2.3–7.7× `useg+uwidth`                           |
+| `skip_columns`        | 80-column early exits | ~8.9–222 ns / call   | 2.7–88.8× `useg+uwidth`                          |
+| `width_within(…, 80)` | 80-column input fits  | 10.6 GB/s            | full `visible_width`: 11.0 GB/s                  |
+| `grapheme_indices`    | all 4 corpora         | 0.5–0.7 GB/s         | 2.8–3.8× `useg`; within 3.2% of `graphemes`      |
+| `wrap_measured`       | CJK/emoji, 40/80 cols | 0.6–0.7 GB/s         | 1.30–1.36× wrap + remeasure; within 2.5% of wrap |
+
+Early-exit benchmarks measure latency per call over 80 columns of a 1 MiB line. The bounded-width benchmark black-boxes both input and result.
+
 Highlights: graphemes 3.3–12.6× over `unicode-segmentation` (width included
 for free), wrap 6.4–27× over `textwrap`, fixed-width truncation O(cells) not
 O(bytes) (~8 ns to cut 80 cells off a 1 MiB line), equality at `memcmp`
@@ -243,37 +276,58 @@ xutf = { git = "https://github.com/can1357/xutf" }
 ```
 
 ```rust
-use xutf::{Utf8, Utf16, Utf16Be, AsciiCase};
+use xutf::{Encoding, Text, Utf16, Utf16Be};
 
-// Transcode between any pair of encodings (native or byte-swapped).
-let utf16: Vec<u16> = xutf::transcode::<Utf8, Utf16>("naïve café 👋".as_bytes());
-let be:    Vec<u16> = xutf::transcode::<Utf16, Utf16Be>(&utf16);
+// Transcode with the target encoding inferred from the container.
+let utf16: Vec<u16> = "naïve café 👋".transcode();
+let text: String = utf16.transcode();
+// Byte-swapped targets stay explicit.
+let be: Vec<u16> = xutf::transcode::<Utf16, Utf16Be>(&utf16);
 
 // Size a buffer without transcoding, or fill a fixed one.
-let len = xutf::transcoded_len::<Utf16, Utf8>(&utf16);
-let mut buf = vec![0u8; len];
-let (read, written) = xutf::transcode_into::<Utf16, Utf8>(&utf16, &mut buf, AsciiCase::Preserve);
+let mut buf = vec![0u8; utf16.transcoded_len::<u8>()];
+let (read, written) = utf16.transcode_into(&mut buf);
 
 // Compare across encodings without converting.
-assert!(xutf::equals::<Utf8, Utf16>("naïve café 👋".as_bytes(), &utf16));
+assert!("naïve café 👋".eq_text(&utf16));
 
-// Decode whatever the BOM says (defaulting to UTF-8).
-let text: Vec<u16> = xutf::from_bytes::<Utf16>(&std::fs::read("file.txt")?);
+// Decode whatever the BOM says (defaulting to UTF-8); `<Utf16>` picks the
+// native byte order (bare `Utf16` leaves the endianness parameter open).
+let decoded: Vec<u16> = <Utf16>::from_bytes(&std::fs::read("file.txt")?);
 ```
 
-Terminal text, allocation-free and generic over the encoding:
+Terminal text, allocation-free — as `Text` methods on `str` and native unit
+slices, or free functions generic over the encoding:
 
 ```rust
+use xutf::{IntoAnsiStripped, MakeAnsiStripped, Text, ToAnsiStripped};
+
 let line = "naïve café 界面 👨‍👩‍👧 done";
-assert_eq!(xutf::width_str(line), 25);
-let cut = xutf::truncate_str(line, 12);            // borrowed prefix, no alloc
-let cols: usize = xutf::graphemes_str(line).count();
-let rows = xutf::wrap_str(line, 10).count();
+assert_eq!(line.visible_width(), 25);
+assert_eq!(line.width_within(80), Some(25));
+let (cut, cut_width) = line.truncate_measured(12); // borrowed prefix, no alloc
+assert_eq!(cut.visible_width(), cut_width);
+let (tail, skipped) = line.skip_columns(4);
+assert!(skipped >= 4 && tail.len() < line.len());
+let indexed = line.grapheme_indices().count();     // typed, double-ended iterator
+assert_eq!(indexed, line.graphemes().len());
+let rows = line.wrap_measured(10).count();         // offsets and widths included
+
+// Owned strings keep their allocation; borrowed strings allocate once.
+let clean = String::from("\x1b[31mred\x1b[0m").into_ansi_stripped();
+assert_eq!(clean, "red");
+assert_eq!("\x1b[1mbold\x1b[0m".to_ansi_stripped(), "bold");
+
+// Mutable native UTF-8/16/32 slice views compact and shorten in place.
+let mut units: Vec<u16> = "\x1b[32mgreen\x1b[0m".encode_utf16().collect();
+let mut clean = units.as_mut_slice();
+clean.make_ansi_stripped();
+assert_eq!(String::from_utf16(clean).unwrap(), "green");
 ```
 
 Per-character widths match `unicode-width` 0.2.2 exactly (sole exception
-U+17D8); string widths are cluster-exact — `width(s)` always equals the sum
-of `graphemes(s)` item widths. Deliberate divergences from the
+U+17D8); string widths are cluster-exact — `s.visible_width()` always equals
+the sum of `s.graphemes()` item widths. Deliberate divergences from the
 `unicode-width` string automaton are listed in `src/width.rs`.
 
 ## Fuzzing

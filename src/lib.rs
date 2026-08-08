@@ -15,10 +15,17 @@
 //!   [`Utf16Le`] aliases).
 //! - **Terminal text primitives**, allocation-free and generic over the
 //!   encoding: grapheme segmentation ([`graphemes`], UAX #29 incl. `GB9c` and
-//!   GB11), visible cell width ([`width`]), width truncation ([`truncate`],
-//!   returns a borrowed prefix) and greedy word wrap ([`wrap`], yields borrowed
-//!   sublines), backed by a generated Unicode [`UNICODE_VERSION`] property trie
-//!   (`scripts/gen_props.py`).
+//!   GB11) with double-ended, exact-length iterators, visible cell width
+//!   ([`width`]), width truncation ([`truncate`]), greedy word wrap ([`wrap`]),
+//!   and SIMD ANSI/VT stripping in place ([`MakeAnsiStripped`],
+//!   [`IntoAnsiStripped`]). The [`Text`] extension trait exposes them as
+//!   methods on `str` and native code-unit slices. Unicode properties come from
+//!   the generated [`UNICODE_VERSION`] trie (`scripts/gen_props.py`).
+//! - **Method-level entry points** for the codec itself: [`Text::transcode`]
+//!   infers the target encoding from the container it fills ([`TextBuf`]),
+//!   [`Text::eq_text`] compares across encodings, and [`Encoding::from_bytes`]
+//!   decodes a BOM-tagged byte stream into that encoding's
+//!   [`Container`](Encoding::Container).
 //!
 //! Special-op mapping from the C++ original:
 //!
@@ -52,11 +59,14 @@ mod encoding;
 mod grapheme;
 mod kernel;
 mod native;
+mod normalize;
 mod props;
 #[cfg(test)]
 mod props_tests;
 mod simd;
+mod strip;
 mod tables;
+mod text;
 mod truncate;
 mod unit;
 mod utf16;
@@ -70,18 +80,31 @@ mod x86;
 pub use bytes::{Bom, detect_bom, from_bytes};
 pub use compare::{compare, compare_ignore_ascii_case, equals, equals_ignore_ascii_case};
 pub use convert::{
-	AsciiCase, to_string, transcode, transcode_into, transcode_with_case, transcoded_len,
+	AsciiCase, TextBuf, to_string, transcode, transcode_into, transcode_with_case, transcoded_len,
 };
 pub use encoding::{Codepoints, Encoding, Kind, chars, codepoints};
-pub use grapheme::{Grapheme, Graphemes, graphemes, graphemes_str};
+pub use grapheme::{
+	Grapheme, GraphemeIndices, Graphemes, StrGraphemeIndices, StrGraphemes, grapheme_indices,
+	grapheme_indices_str, graphemes, graphemes_str,
+};
+pub use normalize::{
+	IntoUnicodeNormalized, MakeUnicodeNormalized, NormalizationError, ToUnicodeNormalized,
+};
 pub use props::UNICODE_VERSION;
-pub use truncate::{truncate, truncate_str};
+pub use strip::{IntoAnsiStripped, MakeAnsiStripped, ToAnsiStripped, width_ansi, width_ansi_str};
+pub use text::Text;
+pub use truncate::{
+	skip_columns, skip_columns_str, truncate, truncate_measured, truncate_measured_str, truncate_str,
+};
 pub use unit::Unit;
 pub use utf8::Utf8;
 pub use utf16::Utf16;
 pub use utf32::Utf32;
-pub use width::{width, width_str};
-pub use wrap::{Wrapped, wrap, wrap_str};
+pub use width::{width, width_char, width_str, width_within, width_within_str};
+pub use wrap::{
+	StrWrapped, Wrapped, WrappedLine, WrappedMeasured, wrap, wrap_measured, wrap_measured_str,
+	wrap_str,
+};
 
 /// Little-endian UTF-16, regardless of the native byte order.
 #[cfg(target_endian = "little")]

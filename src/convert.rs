@@ -13,6 +13,62 @@ use crate::{
 	utf8::Utf8,
 };
 
+/// Owned destination of [`Text::transcode`](crate::Text::transcode); pins the
+/// target encoding through its code-unit type.
+///
+/// Implemented for [`String`] and `Vec<u8>` (UTF-8), `Vec<u16>` (UTF-16) and
+/// `Vec<u32>` (UTF-32), all native-endian.
+pub trait TextBuf: Sized {
+	/// Code-unit type of this buffer; selects [`Unit::Native`] as the encoding
+	/// transcoded into.
+	type Unit: Unit;
+
+	/// Wraps freshly transcoded units.
+	///
+	/// Units come from a permissive transcode, so [`String`] substitutes
+	/// U+FFFD for anything that is not valid UTF-8.
+	fn from_units(units: Vec<Self::Unit>) -> Self;
+}
+
+impl TextBuf for String {
+	type Unit = u8;
+
+	#[inline]
+	fn from_units(units: Vec<u8>) -> Self {
+		match Self::from_utf8(units) {
+			Ok(s) => s,
+			Err(e) => Self::from_utf8_lossy(&e.into_bytes()).into_owned(),
+		}
+	}
+}
+
+impl TextBuf for Vec<u8> {
+	type Unit = u8;
+
+	#[inline]
+	fn from_units(units: Self) -> Self {
+		units
+	}
+}
+
+impl TextBuf for Vec<u16> {
+	type Unit = u16;
+
+	#[inline]
+	fn from_units(units: Self) -> Self {
+		units
+	}
+}
+
+impl TextBuf for Vec<u32> {
+	type Unit = u32;
+
+	#[inline]
+	fn from_units(units: Self) -> Self {
+		units
+	}
+}
+
 /// ASCII case transform applied while transcoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AsciiCase {

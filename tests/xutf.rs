@@ -3,9 +3,9 @@
 use std::cmp::Ordering;
 
 use xutf::{
-	AsciiCase, Bom, Utf8, Utf16, Utf32, chars, codepoints, compare, compare_ignore_ascii_case,
-	detect_bom, equals, equals_ignore_ascii_case, from_bytes, to_string, transcode, transcode_into,
-	transcode_with_case, transcoded_len,
+	AsciiCase, Bom, Encoding, Text, Utf8, Utf16, Utf16Be, Utf32, chars, codepoints, compare,
+	compare_ignore_ascii_case, detect_bom, equals, equals_ignore_ascii_case, from_bytes, to_string,
+	transcode, transcode_into, transcode_with_case, transcoded_len,
 };
 
 fn utf16(s: &str) -> Vec<u16> {
@@ -86,6 +86,38 @@ fn utf8_truncated_tail_decodes_to_zero() {
 	// 4-byte lead with only two continuation bytes: consume rest, yield 0.
 	let cps: Vec<u32> = codepoints::<Utf8>(&[b'a', 0xf0, 0x90, 0x80]).collect();
 	assert_eq!(cps, [b'a' as u32, 0]);
+}
+
+#[test]
+fn codepoints_iterate_backward() {
+	let s = "a\u{e9}\u{4e2d}\u{1f600}";
+	let forward: Vec<u32> = codepoints::<Utf8>(s.as_bytes()).collect();
+
+	let mut backward: Vec<u32> = codepoints::<Utf8>(s.as_bytes()).rev().collect();
+	backward.reverse();
+	assert_eq!(backward, forward);
+
+	let utf16: Vec<u16> = s.encode_utf16().collect();
+	let mut backward: Vec<u32> = codepoints::<Utf16>(&utf16).rev().collect();
+	backward.reverse();
+	assert_eq!(backward, forward);
+
+	let foreign16: Vec<u16> = utf16.iter().map(|u| u.swap_bytes()).collect();
+	let mut backward: Vec<u32> = codepoints::<Utf16<true>>(&foreign16).rev().collect();
+	backward.reverse();
+	assert_eq!(backward, forward);
+
+	let utf32: Vec<u32> = s.chars().map(u32::from).collect();
+	let mut backward: Vec<u32> = codepoints::<Utf32>(&utf32).rev().collect();
+	backward.reverse();
+	assert_eq!(backward, forward);
+
+	// Lone surrogates pass through backward like forward.
+	assert_eq!(codepoints::<Utf16>(&[0xd808]).rev().collect::<Vec<_>>(), [0xd808]);
+
+	// Malformed UTF-8 tails consume one unit per step from the back; the
+	// boundaries differ from forward decoding but nothing is dropped.
+	assert_eq!(codepoints::<Utf8>(&[b'a', 0xf0, 0x90, 0x80]).rev().count(), 4);
 }
 
 #[test]
@@ -503,4 +535,69 @@ fn utf32_ascii_then_astral_transition() {
 		reference.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
 	}
 	assert_eq!(expected, reference);
+}
+
+#[test]
+fn encoding_from_bytes_associated_method() {
+	let s = "naïve café 👋";
+	let u16n = utf16(s);
+
+	let mut bom_utf16_le: Vec<u8> = 0xfeffu16.to_le_bytes().to_vec();
+	bom_utf16_le.extend(u16n.iter().flat_map(|u| u.to_le_bytes()));
+
+	let decoded_string: String = Utf8::from_bytes(&bom_utf16_le);
+	assert_eq!(decoded_string, s);
+
+	let decoded_u16: Vec<u16> = <Utf16>::from_bytes(&bom_utf16_le);
+	assert_eq!(decoded_u16, u16n);
+
+	let decoded_u32: Vec<u32> = <Utf32>::from_bytes(&bom_utf16_le);
+	assert_eq!(decoded_u32, utf32(s));
+
+	let mut bom_utf16_be: Vec<u8> = 0xfeffu16.to_be_bytes().to_vec();
+	bom_utf16_be.extend(u16n.iter().flat_map(|u| u.to_be_bytes()));
+
+	let decoded_be: Vec<u16> = Utf16Be::from_bytes(&bom_utf16_be);
+	assert_eq!(swap16(&decoded_be), u16n);
+}
+
+#[test]
+fn text_trait_transcode_and_equality() {
+	let s = "naïve café 👋";
+	let u16n = utf16(s);
+	let u32n = utf32(s);
+
+	// Inferred return type transcoding from &str
+	let vec_u16: Vec<u16> = s.transcode();
+	assert_eq!(vec_u16, u16n);
+
+	let vec_u32: Vec<u32> = s.transcode();
+	assert_eq!(vec_u32, u32n);
+
+	let vec_u8: Vec<u8> = s.transcode();
+	assert_eq!(vec_u8, s.as_bytes());
+
+	// Owned containers work as receivers (autoderef) and as operands.
+	let back_to_string: String = u16n.transcode();
+	assert_eq!(back_to_string, s);
+
+	// Transcode into pre-allocated slice
+	let len = u16n[..].transcoded_len::<u8>();
+	assert_eq!(len, s.len());
+	let mut buf = vec![0u8; len];
+	let (read, written) = u16n[..].transcode_into(&mut buf);
+	assert_eq!(read, u16n.len());
+	assert_eq!(written, s.len());
+	assert_eq!(buf, s.as_bytes());
+
+	// Cross-encoding equality, borrowed or owned operands.
+	assert!(s.eq_text(&u16n));
+	assert!(u16n.eq_text(&u32n));
+	assert!(s.eq_text(&u32n[..]));
+	assert!(u16n.eq_text(s));
+
+	let upper_ascii = "NAIVE CAFE 👋";
+	let lower_ascii = "naive cafe 👋";
+	assert!(lower_ascii.eq_text_ignore_ascii_case(upper_ascii));
+	assert!(s.eq_text_ignore_ascii_case(&u16n));
 }

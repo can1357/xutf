@@ -3,7 +3,7 @@
 //! attribute time, and prints achieved GB/s.
 use std::time::{Duration, Instant};
 
-use xutf::{AsciiCase, Utf8, Utf16, Utf32, transcode_into};
+use xutf::Text;
 
 fn build_input(seed: &str, target_bytes: usize) -> String {
 	let mut s = String::with_capacity(target_bytes + seed.len());
@@ -32,8 +32,8 @@ fn main() {
 		other => panic!("unknown input {other}"),
 	};
 	let src8 = build_input(seed, 256 * 1024);
-	let src16: Vec<u16> = src8.encode_utf16().collect();
-	let src32: Vec<u32> = src8.chars().map(|c| c as u32).collect();
+	let src16: Vec<u16> = src8.transcode();
+	let src32: Vec<u32> = src8.codepoints().collect();
 	let mut out16 = vec![0u16; src8.len() + 16];
 	let mut out32 = vec![0u32; src8.len() + 16];
 	let mut out8 = vec![0u8; src8.len() * 4 + 16];
@@ -44,21 +44,19 @@ fn main() {
 	while start.elapsed() < duration {
 		match pair.as_str() {
 			"8-16" => {
-				let (..) =
-					transcode_into::<Utf8, Utf16>(src8.as_bytes(), &mut out16, AsciiCase::Preserve);
+				let (..) = src8.as_bytes().transcode_into(&mut out16);
 				bytes += src8.len();
 			},
 			"8-32" => {
-				let (..) =
-					transcode_into::<Utf8, Utf32>(src8.as_bytes(), &mut out32, AsciiCase::Preserve);
+				let (..) = src8.as_bytes().transcode_into(&mut out32);
 				bytes += src8.len();
 			},
 			"16-8" => {
-				let (..) = transcode_into::<Utf16, Utf8>(&src16, &mut out8, AsciiCase::Preserve);
+				let (..) = src16[..].transcode_into(&mut out8);
 				bytes += src16.len() * 2;
 			},
 			"32-8" => {
-				let (..) = transcode_into::<Utf32, Utf8>(&src32, &mut out8, AsciiCase::Preserve);
+				let (..) = src32[..].transcode_into(&mut out8);
 				bytes += src32.len() * 4;
 			},
 			other => panic!("unknown pair {other}"),

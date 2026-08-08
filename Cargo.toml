@@ -20,7 +20,9 @@ divan = "0.1"
 encoding_rs = "0.8.35"
 rayon = "1.10"
 simdutf = "0.7.0"
+strip-ansi = "0.1.0"
 textwrap = "0.16"
+unicode-normalization = "0.1.25"
 unicode-segmentation = "1.13"
 unicode-width = "0.2"
 
@@ -45,6 +47,18 @@ harness = false
 
 [[bench]]
 name = "wrap"
+harness = false
+
+[[bench]]
+name = "strip_ansi"
+harness = false
+
+[[bench]]
+name = "width_ansi"
+harness = false
+
+[[bench]]
+name = "normalize"
 harness = false
 
 [[bench]]

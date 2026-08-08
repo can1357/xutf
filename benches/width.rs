@@ -6,7 +6,7 @@
 use divan::Bencher;
 use rayon::prelude::*;
 use unicode_width::UnicodeWidthStr;
-use xutf::{Utf16, width, width_str};
+use xutf::Text;
 
 mod common;
 use common::{build_input, measure, print_ratio_table};
@@ -33,9 +33,9 @@ fn run_ratio_table() {
 		.map(|(index, (name, input))| {
 			let units = &utf16[index];
 			(*name, vec![
-				measure(input.len(), || width_str(input)),
+				measure(input.len(), || input.visible_width()),
 				measure(input.len(), || UnicodeWidthStr::width(input.as_str())),
-				measure(input.len(), || width::<Utf16<false>>(units)),
+				measure(input.len(), || units.visible_width()),
 				measure(input.len(), || {
 					let decoded: String = char::decode_utf16(units.iter().copied())
 						.map(|result| result.unwrap_or(char::REPLACEMENT_CHARACTER))
@@ -50,6 +50,34 @@ fn run_ratio_table() {
 		"Visible width",
 		&["xutf", "unicode-width", "xutf utf16", "utf16 via String"],
 		&rows,
+	);
+
+	let bounded_inputs = [
+		("ascii", inputs[0].1.as_str()),
+		("cjk", inputs[1].1.as_str()),
+		("emoji", inputs[2].1.as_str()),
+		("mixed", inputs[3].1.as_str()),
+		(
+			"ascii 80-col (fits)",
+			"The quick brown fox jumps over 13 lazy dogs. 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXY",
+		),
+	];
+
+	let bounded_rows: Vec<_> = bounded_inputs
+		.par_iter()
+		.map(|(name, input)| {
+			(*name, vec![
+				measure(input.len(), || input.width_within(80).unwrap_or(usize::MAX)),
+				measure(input.len(), || usize::from(input.visible_width() <= 80)),
+				measure(input.len(), || usize::from(UnicodeWidthStr::width(*input) <= 80)),
+			])
+		})
+		.collect();
+
+	print_ratio_table(
+		"Bounded width (fits in 80 cols?)",
+		&["xutf width_within", "xutf width full", "unicode-width full"],
+		&bounded_rows,
 	);
 }
 
@@ -66,7 +94,7 @@ mod ascii {
 		let s = input();
 		bencher
 			.counter(divan::counter::BytesCount::of_slice(s.as_bytes()))
-			.bench_local(|| width_str(&s));
+			.bench_local(|| s.visible_width());
 	}
 
 	#[divan::bench]
@@ -83,7 +111,7 @@ mod ascii {
 		let utf16: Vec<u16> = s.encode_utf16().collect();
 		bencher
 			.counter(divan::counter::BytesCount::of_slice(s.as_bytes()))
-			.bench_local(|| width::<Utf16<false>>(&utf16));
+			.bench_local(|| utf16.visible_width());
 	}
 
 	#[divan::bench]
@@ -114,7 +142,7 @@ mod cjk {
 		let s = input();
 		bencher
 			.counter(divan::counter::BytesCount::of_slice(s.as_bytes()))
-			.bench_local(|| width_str(&s));
+			.bench_local(|| s.visible_width());
 	}
 
 	#[divan::bench]
@@ -131,7 +159,7 @@ mod cjk {
 		let utf16: Vec<u16> = s.encode_utf16().collect();
 		bencher
 			.counter(divan::counter::BytesCount::of_slice(s.as_bytes()))
-			.bench_local(|| width::<Utf16<false>>(&utf16));
+			.bench_local(|| utf16.visible_width());
 	}
 
 	#[divan::bench]
@@ -162,7 +190,7 @@ mod emoji {
 		let s = input();
 		bencher
 			.counter(divan::counter::BytesCount::of_slice(s.as_bytes()))
-			.bench_local(|| width_str(&s));
+			.bench_local(|| s.visible_width());
 	}
 
 	#[divan::bench]
@@ -179,7 +207,7 @@ mod emoji {
 		let utf16: Vec<u16> = s.encode_utf16().collect();
 		bencher
 			.counter(divan::counter::BytesCount::of_slice(s.as_bytes()))
-			.bench_local(|| width::<Utf16<false>>(&utf16));
+			.bench_local(|| utf16.visible_width());
 	}
 
 	#[divan::bench]
@@ -210,7 +238,7 @@ mod mixed {
 		let s = input();
 		bencher
 			.counter(divan::counter::BytesCount::of_slice(s.as_bytes()))
-			.bench_local(|| width_str(&s));
+			.bench_local(|| s.visible_width());
 	}
 
 	#[divan::bench]
@@ -227,7 +255,7 @@ mod mixed {
 		let utf16: Vec<u16> = s.encode_utf16().collect();
 		bencher
 			.counter(divan::counter::BytesCount::of_slice(s.as_bytes()))
-			.bench_local(|| width::<Utf16<false>>(&utf16));
+			.bench_local(|| utf16.visible_width());
 	}
 
 	#[divan::bench]

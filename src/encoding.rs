@@ -2,7 +2,7 @@
 
 use core::marker::PhantomData;
 
-use crate::unit::Unit;
+use crate::{convert::TextBuf, unit::Unit};
 
 pub mod sealed {
 	pub trait Sealed {}
@@ -32,6 +32,8 @@ pub enum Kind {
 pub trait Encoding: sealed::Sealed + 'static {
 	/// Code-unit type.
 	type Unit: Unit;
+	/// Canonical owned container type for this encoding.
+	type Container: TextBuf<Unit = Self::Unit>;
 	/// Encoding family.
 	const KIND: Kind;
 	/// `true` when code units are byte-swapped relative to native byte order.
@@ -57,6 +59,36 @@ pub trait Encoding: sealed::Sealed + 'static {
 	/// # Panics
 	/// If `input` is empty.
 	fn decode(input: &mut &[Self::Unit]) -> u32;
+	/// Decodes one codepoint from the back of `input`, shrinking it by the
+	/// consumed unit count.
+	///
+	/// Permissive like [`decode`](Encoding::decode); a malformed tail consumes
+	/// a single unit, so backward boundaries may disagree with forward ones on
+	/// invalid input.
+	///
+	/// # Panics
+	/// If `input` is empty.
+	fn decode_back(input: &mut &[Self::Unit]) -> u32;
+
+	/// Decodes a raw byte stream into [`Self::Container`](Encoding::Container),
+	/// picking the source encoding from its BOM (defaulting to UTF-8).
+	///
+	/// # Example
+	/// ```
+	/// use xutf::{Encoding, Utf8, Utf16};
+	///
+	/// let bytes = b"\xef\xbb\xbfcaf\xc3\xa9";
+	/// assert_eq!(Utf8::from_bytes(bytes), "café");
+	/// // `<Utf16>` (not `Utf16`) so the endianness parameter takes its default.
+	/// assert_eq!(<Utf16>::from_bytes(bytes), [b'c' as u16, b'a' as u16, b'f' as u16, 0xe9]);
+	/// ```
+	fn from_bytes(data: &[u8]) -> Self::Container
+	where
+		Self: Sized,
+	{
+		let units = crate::bytes::from_bytes::<Self>(data);
+		TextBuf::from_units(units)
+	}
 }
 
 /// `true` when `A` and `B` are byte-for-byte the same encoding.
@@ -72,6 +104,7 @@ pub struct Codepoints<'a, E: Encoding> {
 	rest:      &'a [E::Unit],
 	_encoding: PhantomData<E>,
 }
+
 impl<E: Encoding> Clone for Codepoints<'_, E> {
 	#[inline(always)]
 	fn clone(&self) -> Self {
@@ -97,6 +130,19 @@ impl<E: Encoding> Iterator for Codepoints<'_, E> {
 		(self.rest.len().div_ceil(E::MAX_UNITS), Some(self.rest.len()))
 	}
 }
+
+impl<E: Encoding> DoubleEndedIterator for Codepoints<'_, E> {
+	#[inline]
+	fn next_back(&mut self) -> Option<u32> {
+		if self.rest.is_empty() {
+			None
+		} else {
+			Some(E::decode_back(&mut self.rest))
+		}
+	}
+}
+
+impl<E: Encoding> core::iter::FusedIterator for Codepoints<'_, E> {}
 
 /// Iterates the raw (unvalidated) codepoints of `input`.
 #[inline]

@@ -1,4 +1,6 @@
-use xutf::{Utf8, Utf16, Utf32, graphemes_str, width_str, wrap, wrap_str};
+use xutf::{
+	Utf8, Utf16, Utf32, graphemes_str, width_str, wrap, wrap_measured, wrap_measured_str, wrap_str,
+};
 
 fn lines(input: &str, width: usize) -> Vec<&str> {
 	wrap_str(input, width).collect()
@@ -166,4 +168,65 @@ fn simple_ascii_prose_matches_textwrap_shape() {
 		let expected: Vec<&str> = baseline.iter().map(|line| line.as_ref()).collect();
 		assert_eq!(actual, expected);
 	}
+}
+
+#[test]
+fn measured_lines_match_plain_wrap_and_report_source_positions() {
+	let corpus = [
+		"",
+		"plain ascii paragraph with several words",
+		"  leading and trailing spaces   ",
+		"aa   bb      cc",
+		"a\r\nb\rc\n\nd",
+		"界 界界 長い単語",
+		"👨‍👩‍👧 family 🇺🇸 flag",
+		"supercalifragilisticexpialidocious",
+		"\n",
+		"a\n",
+	];
+
+	for input in corpus {
+		for max_width in [0, 1, 4, 10, 80] {
+			let measured: Vec<_> = wrap_measured_str(input, max_width).collect();
+			let plain: Vec<_> = wrap_str(input, max_width).collect();
+			assert_eq!(measured.len(), plain.len(), "{input:?}, width {max_width}");
+
+			let mut previous_at = None;
+			for (line, expected) in measured.iter().zip(&plain) {
+				assert_eq!(line.as_str(), *expected, "{input:?}, width {max_width}");
+				assert_eq!(
+					&input[line.at..line.at + line.as_str().len()],
+					line.as_str(),
+					"{input:?}, width {max_width}",
+				);
+				assert_eq!(line.width, width_str(line.as_str()));
+				if let Some(at) = previous_at {
+					assert!(line.at > at, "{input:?}, width {max_width}");
+				}
+				previous_at = Some(line.at);
+			}
+		}
+	}
+}
+
+#[test]
+fn measured_utf16_offsets_are_code_unit_offsets() {
+	let input: Vec<u16> = "a 😀 b\n界界 z".encode_utf16().collect();
+	let lines: Vec<_> = wrap_measured::<Utf16<false>>(&input, 4).collect();
+	let actual: Vec<_> = lines
+		.iter()
+		.map(|line| {
+			assert_eq!(&input[line.at..line.at + line.units.len()], line.units);
+			let text = String::from_utf16(line.units).unwrap();
+			assert_eq!(line.width, width_str(&text));
+			(line.at, line.width, text)
+		})
+		.collect();
+
+	assert_eq!(actual, [
+		(0, 4, "a 😀".to_owned()),
+		(5, 1, "b".to_owned()),
+		(7, 4, "界界".to_owned()),
+		(10, 1, "z".to_owned()),
+	],);
 }

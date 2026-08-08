@@ -1,8 +1,9 @@
-//! Extended grapheme cluster segmentation (UAX #29, Unicode 17) with terminal
-//! cell width computed in the same pass. The permissive iterators allocate no
-//! memory.
+//! Extended grapheme cluster segmentation (UAX #29, Unicode 17) with code-unit
+//! offsets and terminal cell width computed in the same pass. The permissive
+//! iterators allocate no memory; [`Graphemes`] also iterates from both ends and
+//! reports exact lengths.
 
-use core::marker::PhantomData;
+use core::{iter::FusedIterator, marker::PhantomData};
 
 use crate::{
 	encoding::Encoding,
@@ -11,6 +12,7 @@ use crate::{
 		CB_OTHER_INCB_CONSONANT, CB_PREPEND, CB_RI, CB_SPACING_MARK, CB_T, CB_V, CB_ZWJ, EPIC_BIT,
 		INCB_EXTEND_BIT, WIDTH_EMOJI_TEXT, WIDTH_SHIFT, is_emoji_modifier_base, props,
 	},
+	simd::plain_prefix,
 	unit::Unit,
 	utf8::Utf8,
 };
@@ -32,7 +34,31 @@ impl<E: Encoding> Clone for Grapheme<'_, E> {
 
 impl<E: Encoding> Copy for Grapheme<'_, E> {}
 
-/// Allocation-free iterator over extended grapheme clusters.
+impl<E: Encoding> Grapheme<'_, E> {
+	/// Returns whether the cluster's base codepoint is a C0, DEL, or C1
+	/// control (`Cc`).
+	///
+	/// CRLF is one cluster and reports `true`. Controls always have width zero,
+	/// but the converse does not hold: zero-width formats such as ZWSP and ZWJ,
+	/// and combining marks, report `false`. Terminal renderers can use this
+	/// distinction to decide whether to skip a cluster or draw it. An empty
+	/// manually constructed cluster reports `false`.
+	#[inline]
+	pub fn is_control(&self) -> bool {
+		let mut units = self.units;
+		if units.is_empty() {
+			return false;
+		}
+		let cp = E::decode(&mut units);
+		matches!(cp, 0x00..=0x1f | 0x7f | 0x80..=0x9f)
+	}
+}
+
+/// Allocation-free double-ended iterator over extended grapheme clusters.
+///
+/// The length is exact: [`size_hint`](Iterator::size_hint) and
+/// [`len`](ExactSizeIterator::len) count the remaining clusters in one O(n)
+/// scan instead of returning cheap bounds.
 pub struct Graphemes<'a, E: Encoding> {
 	rest:      &'a [E::Unit],
 	_encoding: PhantomData<E>,
@@ -59,10 +85,116 @@ impl<'a, E: Encoding> Iterator for Graphemes<'a, E> {
 		Some(Grapheme { units, width: scan.width })
 	}
 
-	#[inline(always)]
+	#[inline]
 	fn size_hint(&self) -> (usize, Option<usize>) {
-		(usize::from(!self.rest.is_empty()), Some(self.rest.len()))
+		let len = cluster_count::<E>(self.rest);
+		(len, Some(len))
 	}
+
+	#[inline]
+	fn count(self) -> usize {
+		cluster_count::<E>(self.rest)
+	}
+
+	#[inline]
+	fn last(mut self) -> Option<Grapheme<'a, E>> {
+		self.next_back()
+	}
+}
+
+impl<'a, E: Encoding> DoubleEndedIterator for Graphemes<'a, E> {
+	#[inline]
+	fn next_back(&mut self) -> Option<Grapheme<'a, E>> {
+		if self.rest.is_empty() {
+			return None;
+		}
+		let scan = prev_cluster::<E>(self.rest);
+		let (rest, units) = self.rest.split_at(self.rest.len() - scan.units);
+		self.rest = rest;
+		Some(Grapheme { units, width: scan.width })
+	}
+}
+
+impl<E: Encoding> ExactSizeIterator for Graphemes<'_, E> {
+	#[inline]
+	fn len(&self) -> usize {
+		cluster_count::<E>(self.rest)
+	}
+}
+
+impl<E: Encoding> FusedIterator for Graphemes<'_, E> {}
+
+/// Allocation-free double-ended iterator over extended grapheme clusters and
+/// their code-unit offsets.
+///
+/// Offsets are measured from the start of the original input: bytes for UTF-8,
+/// `u16` units for UTF-16, and `u32` units for UTF-32. Empty input yields no
+/// items. Like [`Graphemes`], the length is exact at the cost of a counting
+/// scan.
+pub struct GraphemeIndices<'a, E: Encoding> {
+	inner:  Graphemes<'a, E>,
+	offset: usize,
+}
+
+impl<E: Encoding> Clone for GraphemeIndices<'_, E> {
+	#[inline(always)]
+	fn clone(&self) -> Self {
+		Self { inner: self.inner.clone(), offset: self.offset }
+	}
+}
+
+impl<'a, E: Encoding> Iterator for GraphemeIndices<'a, E> {
+	type Item = (usize, Grapheme<'a, E>);
+
+	#[inline]
+	fn next(&mut self) -> Option<Self::Item> {
+		let grapheme = self.inner.next()?;
+		let offset = self.offset;
+		self.offset += grapheme.units.len();
+		Some((offset, grapheme))
+	}
+
+	#[inline]
+	fn size_hint(&self) -> (usize, Option<usize>) {
+		self.inner.size_hint()
+	}
+
+	#[inline]
+	fn count(self) -> usize {
+		self.inner.count()
+	}
+
+	#[inline]
+	fn last(mut self) -> Option<Self::Item> {
+		self.next_back()
+	}
+}
+
+impl<E: Encoding> DoubleEndedIterator for GraphemeIndices<'_, E> {
+	#[inline]
+	fn next_back(&mut self) -> Option<Self::Item> {
+		let grapheme = self.inner.next_back()?;
+		Some((self.offset + self.inner.rest.len(), grapheme))
+	}
+}
+
+impl<E: Encoding> ExactSizeIterator for GraphemeIndices<'_, E> {
+	#[inline]
+	fn len(&self) -> usize {
+		self.inner.len()
+	}
+}
+
+impl<E: Encoding> FusedIterator for GraphemeIndices<'_, E> {}
+
+/// Iterates the extended grapheme clusters of an encoded slice with their
+/// code-unit offsets.
+///
+/// Offsets are bytes for UTF-8 and element counts for UTF-16 and UTF-32. Empty
+/// input yields no items.
+#[inline(always)]
+pub const fn grapheme_indices<E: Encoding>(input: &[E::Unit]) -> GraphemeIndices<'_, E> {
+	GraphemeIndices { inner: graphemes(input), offset: 0 }
 }
 
 /// Iterates the extended grapheme clusters of an encoded slice without
@@ -72,14 +204,131 @@ pub const fn graphemes<E: Encoding>(input: &[E::Unit]) -> Graphemes<'_, E> {
 	Graphemes { rest: input, _encoding: PhantomData }
 }
 
+/// Double-ended, exact-length iterator over the extended grapheme clusters of
+/// a UTF-8 string, yielding borrowed sub-strings. Created by
+/// [`graphemes_str`].
+#[derive(Clone)]
+pub struct StrGraphemes<'a> {
+	inner: Graphemes<'a, Utf8>,
+}
+
+impl<'a> Iterator for StrGraphemes<'a> {
+	type Item = &'a str;
+
+	#[inline]
+	fn next(&mut self) -> Option<&'a str> {
+		// SAFETY: cluster boundaries fall on char boundaries in valid UTF-8.
+		self
+			.inner
+			.next()
+			.map(|g| unsafe { core::str::from_utf8_unchecked(g.units) })
+	}
+
+	#[inline]
+	fn size_hint(&self) -> (usize, Option<usize>) {
+		self.inner.size_hint()
+	}
+
+	#[inline]
+	fn count(self) -> usize {
+		self.inner.count()
+	}
+
+	#[inline]
+	fn last(mut self) -> Option<&'a str> {
+		self.next_back()
+	}
+}
+
+impl<'a> DoubleEndedIterator for StrGraphemes<'a> {
+	#[inline]
+	fn next_back(&mut self) -> Option<&'a str> {
+		// SAFETY: cluster boundaries fall on char boundaries in valid UTF-8.
+		self
+			.inner
+			.next_back()
+			.map(|g| unsafe { core::str::from_utf8_unchecked(g.units) })
+	}
+}
+
+impl ExactSizeIterator for StrGraphemes<'_> {
+	#[inline]
+	fn len(&self) -> usize {
+		self.inner.len()
+	}
+}
+
+impl FusedIterator for StrGraphemes<'_> {}
+
+/// Double-ended, exact-length iterator over a UTF-8 string's grapheme
+/// clusters and byte offsets.
+#[derive(Clone)]
+pub struct StrGraphemeIndices<'a> {
+	inner: GraphemeIndices<'a, Utf8>,
+}
+
+#[inline(always)]
+const fn indexed_str(item: (usize, Grapheme<'_, Utf8>)) -> (usize, &str) {
+	let (offset, grapheme) = item;
+	// SAFETY: cluster boundaries fall on char boundaries in valid UTF-8.
+	(offset, unsafe { core::str::from_utf8_unchecked(grapheme.units) })
+}
+
+impl<'a> Iterator for StrGraphemeIndices<'a> {
+	type Item = (usize, &'a str);
+
+	#[inline]
+	fn next(&mut self) -> Option<Self::Item> {
+		self.inner.next().map(indexed_str)
+	}
+
+	#[inline]
+	fn size_hint(&self) -> (usize, Option<usize>) {
+		self.inner.size_hint()
+	}
+
+	#[inline]
+	fn count(self) -> usize {
+		self.inner.count()
+	}
+
+	#[inline]
+	fn last(mut self) -> Option<Self::Item> {
+		self.next_back()
+	}
+}
+
+impl DoubleEndedIterator for StrGraphemeIndices<'_> {
+	#[inline]
+	fn next_back(&mut self) -> Option<Self::Item> {
+		self.inner.next_back().map(indexed_str)
+	}
+}
+
+impl ExactSizeIterator for StrGraphemeIndices<'_> {
+	#[inline]
+	fn len(&self) -> usize {
+		self.inner.len()
+	}
+}
+
+impl FusedIterator for StrGraphemeIndices<'_> {}
+
 /// Iterates the extended grapheme clusters of a UTF-8 string as borrowed
 /// strings.
 #[inline]
-pub fn graphemes_str(input: &str) -> impl Iterator<Item = &str> + Clone {
-	graphemes::<Utf8>(input.as_bytes()).map(|g| {
-		// SAFETY: cluster boundaries fall on char boundaries in valid UTF-8.
-		unsafe { core::str::from_utf8_unchecked(g.units) }
-	})
+pub const fn graphemes_str(input: &str) -> StrGraphemes<'_> {
+	StrGraphemes { inner: graphemes::<Utf8>(input.as_bytes()) }
+}
+
+/// Iterates a UTF-8 string's extended grapheme clusters with their byte
+/// offsets.
+///
+/// Each offset is a valid character boundary measured from the start of the
+/// input. Empty input yields no items.
+#[inline]
+pub const fn grapheme_indices_str(input: &str) -> StrGraphemeIndices<'_> {
+	StrGraphemeIndices { inner: grapheme_indices::<Utf8>(input.as_bytes()) }
 }
 
 /// One scanned cluster: code units consumed and terminal cell width.
@@ -258,4 +507,112 @@ pub fn next_cluster<E: Encoding>(input: &[E::Unit]) -> ClusterScan {
 	}
 
 	ClusterScan { units: input.len() - rest.len(), width: state.finish() }
+}
+
+/// Conservative pairwise join test for the backward scan: `true` when a
+/// codepoint with packed props `b` could join a cluster ending in props `a`
+/// under *some* preceding context. `false` therefore proves a break
+/// regardless of history; the history-dependent rules (regional-indicator
+/// parity, emoji ZWJ chains, `InCB` linkers) conservatively stay `true`.
+#[inline(always)]
+const fn may_join(a: u8, b: u8) -> bool {
+	let ca = a & CB_MASK;
+	let cb = b & CB_MASK;
+	if matches!(ca, CB_CR | CB_LF | CB_CONTROL) {
+		// GB3/GB4: controls break from everything except CR before LF.
+		return ca == CB_CR && cb == CB_LF;
+	}
+	match cb {
+		CB_CR | CB_LF | CB_CONTROL => false,
+		CB_EXTEND | CB_EXTEND_INCB_LINKER | CB_ZWJ | CB_SPACING_MARK => true,
+		_ if ca == CB_PREPEND => true,
+		CB_L => ca == CB_L,
+		CB_V => matches!(ca, CB_L | CB_LV | CB_V),
+		CB_T => matches!(ca, CB_LV | CB_V | CB_LVT | CB_T),
+		CB_LV | CB_LVT => ca == CB_L,
+		CB_RI => ca == CB_RI,
+		// GB9c: a consonant joins only when a linker chain is still open,
+		// which requires the previous codepoint to keep it open.
+		CB_OTHER_INCB_CONSONANT => {
+			ca == CB_EXTEND_INCB_LINKER || (a & INCB_EXTEND_BIT != 0 && ca != CB_OTHER_INCB_CONSONANT)
+		},
+		_ => ca == CB_ZWJ && b & EPIC_BIT != 0,
+	}
+}
+
+/// Scans the cluster at the end of a non-empty encoded slice.
+///
+/// Decodes backwards to the nearest boundary provable from a codepoint pair
+/// alone ([`may_join`]), then re-runs the forward scanner from there, so the
+/// forward state machine stays the single segmentation authority. Malformed
+/// input may cut differently than the forward direction, but progress and
+/// in-bounds cuts still hold.
+#[inline]
+pub fn prev_cluster<E: Encoding>(input: &[E::Unit]) -> ClusterScan {
+	if !E::FOREIGN {
+		let last = input[input.len() - 1].to_u32();
+		if last < 0x80 {
+			let prev = if input.len() > 1 {
+				input[input.len() - 2].to_u32()
+			} else {
+				0x80
+			};
+			if last == 0x0a && prev == 0x0d {
+				return ClusterScan { units: 2, width: 0 };
+			}
+			// Two adjacent ASCII units always break (GB9b Prepend and CR are
+			// the only absorbers before ASCII, and both are handled above).
+			if input.len() == 1 || prev < 0x80 {
+				let width = usize::from((0x20..=0x7e).contains(&last));
+				return ClusterScan { units: 1, width };
+			}
+		}
+	}
+
+	let mut back = input;
+	let mut after = props(E::decode_back(&mut back));
+	while !back.is_empty() {
+		let mut peek = back;
+		let p = props(E::decode_back(&mut peek));
+		if !may_join(p, after) {
+			break;
+		}
+		back = peek;
+		after = p;
+	}
+
+	// Forward re-scan from the guaranteed boundary at `back.len()`.
+	let mut at = back.len();
+	loop {
+		let scan = next_cluster::<E>(&input[at..]);
+		if at + scan.units == input.len() {
+			return scan;
+		}
+		at += scan.units;
+	}
+}
+
+/// Counts the extended grapheme clusters of an encoded slice in one pass,
+/// with a SIMD bulk path over printable ASCII runs.
+pub fn cluster_count<E: Encoding>(input: &[E::Unit]) -> usize {
+	let mut rest = input;
+	let mut count = 0;
+	while !rest.is_empty() {
+		if !E::FOREIGN {
+			let run = plain_prefix(rest);
+			if run == rest.len() {
+				return count + run;
+			}
+			// All but the run's last unit are whole clusters; the last may
+			// open a promotable or extending cluster, such as a keycap.
+			if run > 1 {
+				count += run - 1;
+				rest = &rest[run - 1..];
+			}
+		}
+		let scan = next_cluster::<E>(rest);
+		count += 1;
+		rest = &rest[scan.units..];
+	}
+	count
 }

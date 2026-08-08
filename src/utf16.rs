@@ -9,6 +9,7 @@ use crate::encoding::{Encoding, Kind};
 pub struct Utf16<const FOREIGN: bool = false>;
 
 impl<const FOREIGN: bool> Encoding for Utf16<FOREIGN> {
+	type Container = alloc::vec::Vec<u16>;
 	type Unit = u16;
 
 	const FOREIGN: bool = FOREIGN;
@@ -79,5 +80,37 @@ impl<const FOREIGN: bool> Encoding for Utf16<FOREIGN> {
 
 		*input = &s[1 + has_high as usize..];
 		cp
+	}
+
+	#[inline(always)]
+	fn decode_back(input: &mut &[u16]) -> u32 {
+		let s = *input;
+		let last = s.len() - 1;
+		let hi = if FOREIGN {
+			s[last].swap_bytes()
+		} else {
+			s[last]
+		};
+
+		// Trailing low surrogate with a leading high surrogate to pair with;
+		// anything else (including a lone surrogate) passes through.
+		let has_pair = (hi & 0xfc00) == 0xdc00 && s.len() != 1 && {
+			let raw = s[last - 1];
+			let lo = if FOREIGN { raw.swap_bytes() } else { raw };
+			(lo & 0xfc00) == 0xd800
+		};
+		if has_pair {
+			let raw = s[last - 1];
+			let lo = if FOREIGN { raw.swap_bytes() } else { raw };
+			*input = &s[..last - 1];
+			(hi as u32)
+				.wrapping_sub(0xdc00)
+				.wrapping_add(0x10000)
+				.wrapping_sub(0xd800 << 10)
+				.wrapping_add((lo as u32) << 10)
+		} else {
+			*input = &s[..last];
+			hi as u32
+		}
 	}
 }

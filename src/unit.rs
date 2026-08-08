@@ -14,6 +14,9 @@ mod sealed {
 /// Sealed; exists so the transcoding/comparison kernels can be generic over
 /// unit width while keeping all SIMD operations on concrete element types.
 pub trait Unit: sealed::Sealed + Copy + Eq + Default + SimdCast + SimdElement + 'static {
+	/// Native UTF encoding for this code-unit type.
+	type Native: crate::encoding::Encoding<Unit = Self>;
+
 	/// Truncating conversion from a codepoint value.
 	fn from_u32(v: u32) -> Self;
 	/// Zero-extending conversion to a codepoint value.
@@ -37,8 +40,10 @@ pub trait Unit: sealed::Sealed + Copy + Eq + Default + SimdCast + SimdElement + 
 }
 
 macro_rules! impl_unit {
-	($t:ty) => {
+	($t:ty, $native:ty) => {
 		impl Unit for $t {
+			type Native = $native;
+
 			#[inline(always)]
 			fn from_u32(v: u32) -> Self {
 				v as $t
@@ -92,9 +97,9 @@ macro_rules! impl_unit {
 	};
 }
 
-impl_unit!(u8);
-impl_unit!(u16);
-impl_unit!(u32);
+impl_unit!(u8, crate::utf8::Utf8);
+impl_unit!(u16, crate::utf16::Utf16<false>);
+impl_unit!(u32, crate::utf32::Utf32<false>);
 
 /// Scalar ASCII case fold, mirroring [`Unit::fold_case`] on a single value.
 #[inline(always)]

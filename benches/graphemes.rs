@@ -5,9 +5,8 @@
 
 use divan::Bencher;
 use rayon::prelude::*;
-use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
-use xutf::{Utf8, Utf16, graphemes};
+use xutf::Text;
 
 mod common;
 use common::{build_input, measure, print_ratio_table};
@@ -17,16 +16,30 @@ common::bench_main!();
 const TARGET: usize = 1024 * 1024;
 
 fn xutf_checksum_utf8(s: &str) -> usize {
-	graphemes::<Utf8>(s.as_bytes()).fold(0usize, |sum, g| sum.wrapping_add(1 + g.width))
+	s.as_bytes()
+		.graphemes()
+		.fold(0usize, |sum, g| sum.wrapping_add(1 + g.width))
 }
 
 fn xutf_checksum_utf16(units: &[u16]) -> usize {
-	graphemes::<Utf16<false>>(units).fold(0usize, |sum, g| sum.wrapping_add(1 + g.width))
+	units
+		.graphemes()
+		.fold(0usize, |sum, g| sum.wrapping_add(1 + g.width))
 }
 
 fn useg_width_checksum(s: &str) -> usize {
-	s.graphemes(true)
+	unicode_segmentation::UnicodeSegmentation::graphemes(s, true)
 		.fold(0usize, |sum, g| sum.wrapping_add(1 + UnicodeWidthStr::width(g)))
+}
+
+fn xutf_indices_checksum(s: &str) -> usize {
+	s.grapheme_indices()
+		.fold(0usize, |sum, (at, cluster)| sum.wrapping_add(at + cluster.len()))
+}
+
+fn useg_indices_checksum(s: &str) -> usize {
+	unicode_segmentation::UnicodeSegmentation::grapheme_indices(s, true)
+		.fold(0usize, |sum, (at, cluster)| sum.wrapping_add(at + cluster.len()))
 }
 
 fn run_ratio_table() {
@@ -52,7 +65,11 @@ fn run_ratio_table() {
 			let utf16: Vec<u16> = s.encode_utf16().collect();
 			(*name, vec![
 				measure(s.len(), || xutf_checksum_utf8(s)),
-				measure(s.len(), || s.graphemes(true).count()),
+				measure(s.len(), || xutf_indices_checksum(s)),
+				measure(s.len(), || useg_indices_checksum(s)),
+				measure(s.len(), || {
+					unicode_segmentation::UnicodeSegmentation::graphemes(s.as_str(), true).count()
+				}),
 				measure(s.len(), || useg_width_checksum(s)),
 				measure(s.len(), || xutf_checksum_utf16(&utf16)),
 				measure(s.len(), || {
@@ -67,7 +84,15 @@ fn run_ratio_table() {
 
 	print_ratio_table(
 		"Grapheme clusters",
-		&["xutf", "unicode-seg", "useg+uwidth", "xutf utf16", "utf16 via String"],
+		&[
+			"xutf",
+			"xutf indices",
+			"useg indices",
+			"unicode-seg",
+			"useg+uwidth",
+			"xutf utf16",
+			"utf16 via String",
+		],
 		&rows,
 	);
 }
@@ -96,7 +121,9 @@ mod ascii {
 		let s = input();
 		bencher
 			.counter(divan::counter::BytesCount::of_slice(s.as_bytes()))
-			.bench_local(|| s.graphemes(true).count());
+			.bench_local(|| {
+				unicode_segmentation::UnicodeSegmentation::graphemes(s.as_str(), true).count()
+			});
 	}
 
 	#[divan::bench]
@@ -152,7 +179,9 @@ mod cjk {
 		let s = input();
 		bencher
 			.counter(divan::counter::BytesCount::of_slice(s.as_bytes()))
-			.bench_local(|| s.graphemes(true).count());
+			.bench_local(|| {
+				unicode_segmentation::UnicodeSegmentation::graphemes(s.as_str(), true).count()
+			});
 	}
 
 	#[divan::bench]
@@ -208,7 +237,9 @@ mod emoji_soup {
 		let s = input();
 		bencher
 			.counter(divan::counter::BytesCount::of_slice(s.as_bytes()))
-			.bench_local(|| s.graphemes(true).count());
+			.bench_local(|| {
+				unicode_segmentation::UnicodeSegmentation::graphemes(s.as_str(), true).count()
+			});
 	}
 
 	#[divan::bench]
@@ -264,7 +295,9 @@ mod mixed {
 		let s = input();
 		bencher
 			.counter(divan::counter::BytesCount::of_slice(s.as_bytes()))
-			.bench_local(|| s.graphemes(true).count());
+			.bench_local(|| {
+				unicode_segmentation::UnicodeSegmentation::graphemes(s.as_str(), true).count()
+			});
 	}
 
 	#[divan::bench]

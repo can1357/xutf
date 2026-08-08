@@ -137,3 +137,61 @@ fn simd_boundaries() {
 	assert_eq!(truncate_str(&input, 64), plain);
 	assert_eq!(truncate_str(&input, 66), input);
 }
+
+#[test]
+fn measured_width_matches_returned_prefix() {
+	let family = "👨\u{200d}👩\u{200d}👧";
+	let cases = [
+		("ascii", 3, "asc"),
+		("a界b", 2, "a"),
+		(family, 2, family),
+		("e\u{301}x", 1, "e\u{301}"),
+		("", 4, ""),
+		("abc", 0, ""),
+		("a界", 3, "a界"),
+		("a界", 20, "a界"),
+	];
+
+	for (input, max_width, expected) in cases {
+		let (prefix, measured) = xutf::truncate_measured_str(input, max_width);
+		assert_eq!(prefix, expected);
+		assert_eq!(measured, width_str(prefix), "{input:?} at width {max_width}");
+		assert_eq!(prefix, truncate_str(input, max_width));
+	}
+}
+
+#[test]
+fn skip_columns_unit_cases() {
+	let input = "ab界z";
+	let (prefix, prefix_width) = xutf::truncate_measured_str(input, 2);
+	let (rest, dropped_width) = xutf::skip_columns_str(input, 2);
+	assert_eq!(prefix_width, 2);
+	assert_eq!(dropped_width, 2);
+	assert_eq!(format!("{prefix}{rest}"), input);
+
+	let wide = "界x";
+	assert_eq!(truncate_str(wide, 1), "");
+	assert_eq!(xutf::skip_columns_str(wide, 1), ("x", 2));
+
+	let identity = "a\u{200b}b";
+	let (rest, dropped_width) = xutf::skip_columns_str(identity, 0);
+	assert!(core::ptr::eq(rest.as_ptr(), identity.as_ptr()));
+	assert_eq!((rest, dropped_width), (identity, 0));
+
+	assert_eq!(xutf::skip_columns_str(identity, 1), ("b", 1));
+	assert_eq!(xutf::skip_columns_str("a界", 3), ("", 3));
+	assert_eq!(xutf::skip_columns_str("a界", 99), ("", 3));
+}
+
+#[test]
+fn skip_columns_utf16_parity() {
+	let input = "ab界👨\u{200d}👩\u{200d}👧\u{200b}z";
+	let utf16: Vec<u16> = input.encode_utf16().collect();
+
+	for columns in 0..=8 {
+		let (expected_tail, expected_width) = xutf::skip_columns_str(input, columns);
+		let (tail, dropped_width) = xutf::skip_columns::<Utf16<false>>(&utf16, columns);
+		assert_eq!(String::from_utf16(tail).unwrap(), expected_tail);
+		assert_eq!(dropped_width, expected_width);
+	}
+}

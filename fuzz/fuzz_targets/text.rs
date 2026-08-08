@@ -4,10 +4,8 @@ mod support;
 
 use libfuzzer_sys::fuzz_target;
 use support::{u16_units, u32_units};
-use unicode_segmentation::UnicodeSegmentation;
 use xutf::{
-	Encoding, Unit, Utf8, Utf16, Utf32, graphemes, graphemes_str, to_string, truncate, truncate_str,
-	width, width_str, wrap, wrap_str,
+	Encoding, Text, Unit, Utf8, Utf16, Utf32, graphemes, to_string, truncate, width, wrap,
 };
 
 fn ascii_unit<E: Encoding>(cp: u32) -> E::Unit {
@@ -43,6 +41,20 @@ fn check_text<E: Encoding>(input: &[E::Unit], max_width: usize) {
 	}
 	assert_eq!(consumed, input.len());
 	assert_eq!(measured, width::<E>(input));
+	// Exact length holds even on malformed input, and backward iteration
+	// consumes every unit without stalling (its boundaries may differ from
+	// forward ones when the input is malformed).
+	assert_eq!(graphemes::<E>(input).len(), clusters.len());
+	let mut steps = 0usize;
+	let mut reverse_consumed = 0usize;
+	let mut reverse = graphemes::<E>(input);
+	while let Some(cluster) = reverse.next_back() {
+		assert!(!cluster.units.is_empty());
+		reverse_consumed += cluster.units.len();
+		steps += 1;
+		assert!(steps <= cluster_limit);
+	}
+	assert_eq!(reverse_consumed, input.len());
 
 	let truncated = truncate::<E>(input, max_width);
 	assert!(truncated.len() <= input.len());
@@ -128,25 +140,30 @@ fn check_text<E: Encoding>(input: &[E::Unit], max_width: usize) {
 }
 
 fn check_str(input: &str, max_width: usize) {
-	let iter = graphemes_str(input);
+	let iter = input.graphemes();
 	let cloned = iter.clone();
 	let clusters: Vec<_> = iter.collect();
 	assert_eq!(cloned.collect::<Vec<_>>(), clusters);
 	assert_eq!(clusters.concat(), input);
-	let reference: Vec<_> = UnicodeSegmentation::graphemes(input, true).collect();
+	let reference: Vec<_> = unicode_segmentation::UnicodeSegmentation::graphemes(input, true).collect();
 	assert_eq!(clusters, reference, "segmentation differed from unicode-segmentation");
+	// On valid UTF-8 the two directions must agree exactly.
+	let mut reversed: Vec<_> = input.graphemes().rev().collect();
+	reversed.reverse();
+	assert_eq!(reversed, clusters);
+	assert_eq!(input.graphemes().len(), clusters.len());
 
 	let generic_clusters: Vec<_> = graphemes::<Utf8>(input.as_bytes())
 		.map(|cluster| core::str::from_utf8(cluster.units).unwrap())
 		.collect();
 	assert_eq!(generic_clusters, clusters);
-	assert_eq!(width_str(input), width::<Utf8>(input.as_bytes()));
+	assert_eq!(input.visible_width(), width::<Utf8>(input.as_bytes()));
 	assert_eq!(
-		truncate_str(input, max_width).as_bytes(),
+		input.truncate_width(max_width).as_bytes(),
 		truncate::<Utf8>(input.as_bytes(), max_width)
 	);
 
-	let lines: Vec<_> = wrap_str(input, max_width).collect();
+	let lines: Vec<_> = input.wrap(max_width).collect();
 	let generic_lines: Vec<_> = wrap::<Utf8>(input.as_bytes(), max_width)
 		.map(|line| core::str::from_utf8(line).unwrap())
 		.collect();
@@ -154,18 +171,18 @@ fn check_str(input: &str, max_width: usize) {
 }
 
 fn check_valid_encoding<E: Encoding>(input: &[E::Unit], text: &str, max_width: usize) {
-	assert_eq!(width::<E>(input), width_str(text));
+	assert_eq!(width::<E>(input), text.visible_width());
 
-	let expected_clusters: Vec<_> = graphemes_str(text).map(str::to_owned).collect();
+	let expected_clusters: Vec<_> = text.graphemes().map(str::to_owned).collect();
 	let actual_clusters: Vec<_> = graphemes::<E>(input)
 		.map(|cluster| to_string::<E>(cluster.units).unwrap())
 		.collect();
 	assert_eq!(actual_clusters, expected_clusters);
 
-	let expected_truncation = truncate_str(text, max_width);
+	let expected_truncation = text.truncate_width(max_width);
 	assert_eq!(to_string::<E>(truncate::<E>(input, max_width)).unwrap(), expected_truncation);
 
-	let expected_lines: Vec<_> = wrap_str(text, max_width).map(str::to_owned).collect();
+	let expected_lines: Vec<_> = text.wrap(max_width).map(str::to_owned).collect();
 	let actual_lines: Vec<_> = wrap::<E>(input, max_width)
 		.map(|line| to_string::<E>(line).unwrap())
 		.collect();

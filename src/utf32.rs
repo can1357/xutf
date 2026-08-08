@@ -7,6 +7,7 @@ use crate::encoding::{Encoding, Kind};
 pub struct Utf32<const FOREIGN: bool = false>;
 
 impl<const FOREIGN: bool> Encoding for Utf32<FOREIGN> {
+	type Container = alloc::vec::Vec<u32>;
 	type Unit = u32;
 
 	const FOREIGN: bool = FOREIGN;
@@ -33,6 +34,14 @@ impl<const FOREIGN: bool> Encoding for Utf32<FOREIGN> {
 	fn decode(input: &mut &[u32]) -> u32 {
 		let cp = input[0];
 		*input = &input[1..];
+		if FOREIGN { cp.swap_bytes() } else { cp }
+	}
+
+	#[inline(always)]
+	fn decode_back(input: &mut &[u32]) -> u32 {
+		let last = input.len() - 1;
+		let cp = input[last];
+		*input = &input[..last];
 		if FOREIGN { cp.swap_bytes() } else { cp }
 	}
 }

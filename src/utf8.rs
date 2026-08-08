@@ -97,6 +97,7 @@ fn read<const I: usize>(input: &mut &[u8]) -> u32 {
 }
 
 impl Encoding for Utf8 {
+	type Container = alloc::string::String;
 	type Unit = u8;
 
 	const FOREIGN: bool = false;
@@ -153,6 +154,34 @@ impl Encoding for Utf8 {
 			read::<3>(input)
 		} else {
 			read::<4>(input)
+		}
+	}
+
+	#[inline(always)]
+	fn decode_back(input: &mut &[u8]) -> u32 {
+		let s = *input;
+		let last = s.len() - 1;
+		let tail = s[last];
+		if tail < 0x80 {
+			*input = &s[..last];
+			return tail as u32;
+		}
+		// Walk back over at most three continuation bytes to a lead byte.
+		let floor = s.len().saturating_sub(Self::MAX_UNITS);
+		let mut start = last;
+		while start > floor && s[start] & 0xc0 == 0x80 {
+			start -= 1;
+		}
+		if s[start] >= 0xc0 && Self::run_length(s[start]) == s.len() - start {
+			let mut units = &s[start..];
+			let cp = Self::decode(&mut units);
+			*input = &s[..start];
+			cp
+		} else {
+			// Malformed tail: consume the lone trailing unit, passing its
+			// value through like other permissive garbage.
+			*input = &s[..last];
+			tail as u32
 		}
 	}
 }
