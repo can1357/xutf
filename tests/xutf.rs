@@ -595,6 +595,9 @@ fn text_trait_transcode_and_equality() {
 	assert!(u16n.eq_text(&u32n));
 	assert!(s.eq_text(&u32n[..]));
 	assert!(u16n.eq_text(s));
+	let owned = String::from(s);
+	assert!(s.eq_text(&owned));
+	assert!(u16n.eq_text(owned));
 
 	let upper_ascii = "NAIVE CAFE 👋";
 	let lower_ascii = "naive cafe 👋";
