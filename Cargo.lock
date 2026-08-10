@@ -408,7 +408,7 @@ dependencies = [
 
 [[package]]
 name = "xutf"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "divan",
  "encoding_rs",
