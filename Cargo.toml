@@ -25,6 +25,7 @@ textwrap = "0.16"
 unicode-normalization = "0.1.25"
 unicode-segmentation = "1.13"
 unicode-width = "0.2"
+utf8-chars = "3"
 
 [lib]
 bench = false
@@ -63,6 +64,10 @@ harness = false
 
 [[bench]]
 name = "profile"
+harness = false
+
+[[bench]]
+name = "chars"
 harness = false
 
 

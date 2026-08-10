@@ -21,6 +21,11 @@
 //!   [`IntoAnsiStripped`]). The [`Text`] extension trait exposes them as
 //!   methods on `str` and native code-unit slices. Unicode properties come from
 //!   the generated [`UNICODE_VERSION`] trie (`scripts/gen_props.py`).
+//! - **Strict stream decoding** from any [`std::io::BufRead`]
+//!   ([`BufReadCharsExt`]): batch-decoded `char` iteration in every supported
+//!   encoding, with errors that carry the offending bytes ([`ReadCharError`]).
+//!   Drop-in compatible with (and considerably faster than) the `utf8-chars`
+//!   crate.
 //! - **Method-level entry points** for the codec itself: [`Text::transcode`]
 //!   infers the target encoding from the container it fills ([`TextBuf`]),
 //!   [`Text::eq_text`] compares across encodings, and [`Encoding::from_bytes`]
@@ -63,6 +68,7 @@ mod normalize;
 mod props;
 #[cfg(test)]
 mod props_tests;
+mod read;
 mod simd;
 mod strip;
 mod tables;
@@ -91,6 +97,7 @@ pub use normalize::{
 	IntoUnicodeNormalized, MakeUnicodeNormalized, NormalizationError, ToUnicodeNormalized,
 };
 pub use props::UNICODE_VERSION;
+pub use read::{BufReadCharsExt, Chars, CharsRaw, ReadCharError, StreamDecode};
 pub use strip::{IntoAnsiStripped, MakeAnsiStripped, ToAnsiStripped, width_ansi, width_ansi_str};
 pub use text::Text;
 pub use truncate::{

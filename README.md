@@ -31,6 +31,10 @@ roughly 1.5–2× ahead on typical text, and **3–10×** ahead on emoji-heavy i
 - **Terminal text on UTF-8, UTF-16, or UTF-32** — UAX #29 grapheme clusters,
   UAX #11 width, cluster-safe truncate and word wrap, plus SIMD ANSI/VT
   stripping that reuses owned buffers and compacts mutable slices in place.
+- **Strict stream decoding** — `BufReadCharsExt` iterates `char`s straight
+  from any `BufRead` in UTF-8/16/32 (either byte order), decoding in batches
+  from the reader's own buffer; errors carry the offending bytes. Drop-in for
+  the `utf8-chars` crate, 2.5-6x its throughput (`cargo bench --bench chars`).
 - **BOM detection** — decode whatever the BOM says, defaulting to UTF-8.
 - **`#![no_std]`**, zero runtime dependencies, Unicode 17.0 tables generated
   from the UCD.
@@ -323,6 +327,27 @@ let mut units: Vec<u16> = "\x1b[32mgreen\x1b[0m".encode_utf16().collect();
 let mut clean = units.as_mut_slice();
 clean.make_ansi_stripped();
 assert_eq!(String::from_utf16(clean).unwrap(), "green");
+```
+
+Streaming from readers — chars are decoded in batches from the `BufRead`
+buffer, and a char's bytes are only consumed once it is yielded, so partial
+iteration leaves the reader exactly positioned:
+
+```rust
+use std::io::BufReader;
+
+use xutf::{BufReadCharsExt, Utf16Be};
+
+let mut file = BufReader::new(std::fs::File::open("file.txt")?);
+for c in file.chars() {
+	print!("{}", c?); // io::Result<char>; invalid bytes stay in the message
+}
+
+// Any encoding, and errors that carry the raw bytes.
+let mut input = BufReader::new(&[0x00, 0x68, 0xDC, 0x00][..]);
+let decoded: Vec<_> = input.decode_chars_raw::<Utf16Be>().collect();
+assert_eq!(decoded[0].as_ref().unwrap(), &'h');
+assert_eq!(decoded[1].as_ref().unwrap_err().as_bytes(), &[0xDC, 0x00]);
 ```
 
 Per-character widths match `unicode-width` 0.2.2 exactly (sole exception
