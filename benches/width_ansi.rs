@@ -50,9 +50,11 @@ fn run_ratio_table() {
 			let expected = width_ansi_str(input);
 			let stripped = input.to_ansi_stripped();
 			assert_eq!(stripped.visible_width(), expected);
-			// No cross-crate assertion: strip-ansi 0.1 leaves OSC-8 payloads
-			// behind and unicode-width diverges from xutf's emoji-presentation
-			// widths, so only xutf's one-pass and two-pass must agree.
+			// A contender that computes a different result did different work;
+			// its throughput is not comparable. Gate on equality and print N/A
+			// otherwise (strip-ansi 0.1 leaves OSC-8 payloads behind and
+			// unicode-width diverges on emoji presentation).
+			let reference_matches = reference_width(input) == expected;
 
 			(*name, vec![
 				measure(input.len(), || width_ansi_str(input)),
@@ -60,7 +62,11 @@ fn run_ratio_table() {
 					let stripped = input.to_ansi_stripped();
 					stripped.visible_width()
 				}),
-				measure(input.len(), || reference_width(input)),
+				if reference_matches {
+					measure(input.len(), || reference_width(input))
+				} else {
+					f64::NAN
+				},
 			])
 		})
 		.collect();
