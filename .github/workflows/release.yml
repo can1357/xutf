@@ -19,12 +19,14 @@ jobs:
         id: auth
       # Re-tagged releases re-run this job after a successful publish; the
       # version is immutable on crates.io, so "already exists" is success.
+      # The log lives outside the workspace: a file created in it would
+      # fail cargo's dirty-worktree check.
       - name: cargo publish
         run: |
           set -o pipefail
-          if cargo publish 2>&1 | tee publish.log; then
+          if cargo publish 2>&1 | tee /tmp/publish.log; then
             exit 0
           fi
-          grep -q "already exists on crates.io index" publish.log
+          grep -q "already exists on crates.io index" /tmp/publish.log
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
