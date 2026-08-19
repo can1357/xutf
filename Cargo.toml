@@ -12,6 +12,14 @@ categories = ["encoding", "text-processing", "no-std", "internationalization"]
 exclude = ["benches/data", "fuzz", "scripts", ".github"]
 autobenches = false
 
+[features]
+default = []
+
+# Resolve `General_Category`/`Script` against UCD 17.0.0 instead of the
+# default 16.0.0 tables. Off by default: consumers that match a regex engine
+# or tokenizer pre-tokenizer need the 16.0.0 assignments.
+ucd-17 = []
+
 [profile.release]
 lto = "thin"
 

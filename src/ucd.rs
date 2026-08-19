@@ -4,14 +4,32 @@
 //! surface with the same permissive `u32` conventions as the rest of the
 //! crate: surrogates report [`GeneralCategory::Surrogate`], out-of-range
 //! values report `Unassigned` / [`Script::Unknown`]. Data comes from the
-//! generated direct-BMP + astral-trie tables in `ucd_data.rs`
-//! (`scripts/gen_props.py`), at the same [`crate::UNICODE_VERSION`] as the
-//! width and grapheme tables.
+//! generated direct-BMP + astral-trie tables written by
+//! `scripts/gen_props.py`.
+//!
+//! # Unicode generation
+//!
+//! These tables are pinned one release behind [`crate::UNICODE_VERSION`]
+//! (which tracks the width and grapheme data) and report their own
+//! [`UCD_VERSION`]. Callers reach for category and script lookups to agree
+//! with some other engine — a regex crate's `\p{...}`, a tokenizer's
+//! pre-tokenizer — and those engines trail the newest release, so matching
+//! the newest assignments would be the wrong default: a codepoint the other
+//! side still treats as unassigned would silently classify differently.
+//!
+//! Enable the `ucd-17` feature to resolve against Unicode 17.0.0 instead.
+//! Cargo unifies features across the dependency graph, so that choice is
+//! build-wide, not per-crate.
 
-#[path = "ucd_data.rs"]
+#[cfg(not(feature = "ucd-17"))]
+#[path = "ucd/16/data.rs"]
 mod data;
 
-pub use data::Script;
+#[cfg(feature = "ucd-17")]
+#[path = "ucd/17/data.rs"]
+mod data;
+
+pub use data::{Script, UCD_VERSION};
 
 /// `General_Category` property value (UAX #44), e.g. `\p{Lu}`.
 ///

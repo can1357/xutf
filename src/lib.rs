@@ -114,8 +114,8 @@ pub use truncate::{
 	skip_columns, skip_columns_str, truncate, truncate_measured, truncate_measured_str, truncate_str,
 };
 pub use ucd::{
-	GeneralCategory, GeneralCategoryGroup, Script, Ucd, general_category, general_category_group,
-	script,
+	GeneralCategory, GeneralCategoryGroup, Script, UCD_VERSION, Ucd, general_category,
+	general_category_group, script,
 };
 pub use unit::Unit;
 pub use utf8::Utf8;

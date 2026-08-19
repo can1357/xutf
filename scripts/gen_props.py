@@ -22,22 +22,35 @@ import sys
 import urllib.request
 
 UCD = "https://www.unicode.org/Public/UCD/latest/ucd/"
+# Paths within a UCD release root. `None` as a version means "latest".
 FILES = {
-    "UnicodeData.txt": UCD + "UnicodeData.txt",
-    "EastAsianWidth.txt": UCD + "EastAsianWidth.txt",
-    "GraphemeBreakProperty.txt": UCD + "auxiliary/GraphemeBreakProperty.txt",
-    "DerivedCoreProperties.txt": UCD + "DerivedCoreProperties.txt",
-    "emoji-data.txt": UCD + "emoji/emoji-data.txt",
-    "PropList.txt": UCD + "PropList.txt",
-    "Scripts.txt": UCD + "Scripts.txt",
+    "UnicodeData.txt": "UnicodeData.txt",
+    "EastAsianWidth.txt": "EastAsianWidth.txt",
+    "GraphemeBreakProperty.txt": "auxiliary/GraphemeBreakProperty.txt",
+    "DerivedCoreProperties.txt": "DerivedCoreProperties.txt",
+    "emoji-data.txt": "emoji/emoji-data.txt",
+    "PropList.txt": "PropList.txt",
+    "Scripts.txt": "Scripts.txt",
 }
+
+# `General_Category`/`Script` tables are additionally emitted for this older
+# release, because consumers that must byte-match a regex engine or tokenizer
+# built against it cannot use the newest assignments. See `PINNED` in
+# `src/ucd.rs`.
+UCD_PINNED = "16.0.0"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE = os.path.join(HERE, "ucd")
 OUT = os.path.join(HERE, "..", "src", "props.rs")
 OUT_BIN = os.path.join(HERE, "..", "src", "props_bmp.bin")
-OUT_UCD = os.path.join(HERE, "..", "src", "ucd_data.rs")
-OUT_UCD_BIN = os.path.join(HERE, "..", "src", "ucd_bmp.bin")
+
+
+def ucd_out(version) -> tuple[str, str]:
+    """Generated module and blob for a UCD generation, keyed by its major
+    version: `src/ucd/<major>/{data.rs,bmp.bin}`."""
+    out_dir = os.path.join(HERE, "..", "src", "ucd", str(version[0]))
+    os.makedirs(out_dir, exist_ok=True)
+    return os.path.join(out_dir, "data.rs"), os.path.join(out_dir, "bmp.bin")
 
 NUM_CP = 0x110000
 
@@ -82,12 +95,19 @@ GC = [
 SCRIPT_SHIFT = 5
 
 
-def fetch(name: str) -> list[str]:
-    os.makedirs(CACHE, exist_ok=True)
-    path = os.path.join(CACHE, name)
+def fetch(name: str, version: str | None = None) -> list[str]:
+    """Read a UCD data file, downloading it into the cache on first use.
+
+    `version` is a release like `"16.0.0"`; `None` reads the `latest` tree,
+    whose cache lives directly in `scripts/ucd/`.
+    """
+    base = UCD if version is None else f"https://www.unicode.org/Public/{version}/ucd/"
+    cache = CACHE if version is None else os.path.join(CACHE, version)
+    os.makedirs(cache, exist_ok=True)
+    path = os.path.join(cache, name)
     if not os.path.exists(path):
-        print(f"fetching {FILES[name]}")
-        urllib.request.urlretrieve(FILES[name], path)
+        print(f"fetching {base + FILES[name]}")
+        urllib.request.urlretrieve(base + FILES[name], path)
     with open(path, encoding="utf-8") as f:
         return f.readlines()
 
@@ -123,9 +143,9 @@ def unicode_version(lines: list[str]) -> tuple[int, int, int]:
     return tuple(int(g) for g in m.groups())
 
 
-def load_categories() -> list[str]:
+def load_categories(version: str | None = None) -> list[str]:
     cats = ["Cn"] * NUM_CP
-    lines = fetch("UnicodeData.txt")
+    lines = fetch("UnicodeData.txt", version)
     first = None
     for line in lines:
         fields = line.split(";")
@@ -142,9 +162,11 @@ def load_categories() -> list[str]:
     return cats
 
 
-def load_ranged(name: str, prop_field: int = 1, default=None) -> list:
+def load_ranged(
+    name: str, prop_field: int = 1, default=None, version: str | None = None
+) -> list:
     values = [default] * NUM_CP
-    lines = fetch(name)
+    lines = fetch(name, version)
     # @missing defaults first (later data lines override).
     for lo, hi, v in parse_missing(lines):
         for cp in range(lo, min(hi, NUM_CP - 1) + 1):
@@ -414,11 +436,11 @@ def emit(props: list[int], version) -> str:
     return "\n".join(lines) + "\n"
 
 
-def build_ucd() -> tuple[list[int], list[str]]:
+def build_ucd(version: str | None = None) -> tuple[list[int], list[str]]:
     """Packed General_Category + Script word per codepoint, and the script
     index order (Unknown/Common/Inherited first, then alphabetical)."""
-    cats = load_categories()
-    scripts = load_ranged("Scripts.txt", default="Unknown")
+    cats = load_categories(version)
+    scripts = load_ranged("Scripts.txt", default="Unknown", version=version)
     order = ["Unknown", "Common", "Inherited"] + sorted(
         set(scripts) - {"Unknown", "Common", "Inherited"}
     )
@@ -431,12 +453,12 @@ def build_ucd() -> tuple[list[int], list[str]]:
     return words, order
 
 
-def emit_ucd(words: list[int], order: list[str], version) -> str:
+def emit_ucd(words: list[int], order: list[str], version, out_bin: str) -> str:
     size, shift, stage1, blocks, wide = best_trie(words[BMP_END:], elem_size=2)
     leaves = []
     for key in blocks:
         leaves.extend(key)
-    with open(OUT_UCD_BIN, "wb") as f:
+    with open(out_bin, "wb") as f:
         f.write(struct.pack(f"<{BMP_END}H", *words[:BMP_END]))
 
     idx_ty = "u16" if wide else "u8"
@@ -471,6 +493,9 @@ def emit_ucd(words: list[int], order: list[str], version) -> str:
         w("    " + ", ".join(f"Script::{n}" for n in padded[i : i + 8]) + ",")
     w("];")
     w("")
+    w("/// Unicode version of these `General_Category`/`Script` tables.")
+    w("pub const UCD_VERSION: (u8, u8, u8) = (%d, %d, %d);" % version)
+    w("")
     w("/// Word for codepoints outside the Unicode range (permissive decoding")
     w("/// of garbage UTF-32): `General_Category` `Cn`, script `Unknown`.")
     w(f"pub(super) const DEFAULT_WORD: u16 = {default_word};")
@@ -498,7 +523,11 @@ def emit_ucd(words: list[int], order: list[str], version) -> str:
     w("}")
     w("")
     w("/// Direct-indexed words of the Basic Multilingual Plane (u16 LE).")
-    w('static UCD_BMP: [u8; 0x2_0000] = *include_bytes!("ucd_bmp.bin");')
+    w(
+        'static UCD_BMP: [u8; 0x2_0000] = *include_bytes!("'
+        + os.path.basename(out_bin)
+        + '");'
+    )
     w("")
 
     def table(name, ty, vals, per_line):
@@ -519,24 +548,33 @@ def main():
     src = emit(props, version)
     with open(OUT, "w", encoding="utf-8") as f:
         f.write(src)
-    words, order = build_ucd()
-    ucd_src = emit_ucd(words, order, version)
-    with open(OUT_UCD, "w", encoding="utf-8") as f:
-        f.write(ucd_src)
+
+    pinned_version = unicode_version(fetch("Scripts.txt", UCD_PINNED))
+    generations = []
+    for release, ver in ((None, version), (UCD_PINNED, pinned_version)):
+        out_rs, out_bin = ucd_out(ver)
+        words, order = build_ucd(release)
+        with open(out_rs, "w", encoding="utf-8") as f:
+            f.write(emit_ucd(words, order, ver, out_bin))
+        generations.append((ver, words, order, out_rs))
+
     # Normalize to the repo's rustfmt style so regeneration never drifts.
-    subprocess.run(["rustfmt", OUT, OUT_UCD], check=True)
+    subprocess.run(["rustfmt", OUT, *(g[3] for g in generations)], check=True)
+
     size, shift, stage1, blocks, wide = best_trie(props[BMP_END:])
     print(
         f"UCD {version[0]}.{version[1]}.{version[2]}: {BMP_END} bytes direct BMP + "
         f"astral trie (block {1 << shift}, {len(blocks)} unique blocks, "
         f"{'u16' if wide else 'u8'} stage1, {size} bytes) -> {os.path.relpath(OUT)}"
     )
-    size, shift, stage1, blocks, wide = best_trie(words[BMP_END:], elem_size=2)
-    print(
-        f"ucd: {len(order)} scripts, {2 * BMP_END} bytes direct BMP + astral trie "
-        f"(block {1 << shift}, {len(blocks)} unique blocks, "
-        f"{'u16' if wide else 'u8'} stage1, {size} bytes) -> {os.path.relpath(OUT_UCD)}"
-    )
+    for ver, words, order, out_rs in generations:
+        size, shift, stage1, blocks, wide = best_trie(words[BMP_END:], elem_size=2)
+        print(
+            f"ucd {ver[0]}.{ver[1]}.{ver[2]}: {len(order)} scripts, "
+            f"{2 * BMP_END} bytes direct BMP + astral trie (block {1 << shift}, "
+            f"{len(blocks)} unique blocks, {'u16' if wide else 'u8'} stage1, "
+            f"{size} bytes) -> {os.path.relpath(out_rs)}"
+        )
 
 
 if __name__ == "__main__":

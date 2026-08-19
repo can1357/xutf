@@ -626,6 +626,9 @@ pub(super) static SCRIPT_BY_INDEX: [Script; 256] = [
 	Script::Unknown,
 ];
 
+/// Unicode version of these `General_Category`/`Script` tables.
+pub const UCD_VERSION: (u8, u8, u8) = (17, 0, 0);
+
 /// Word for codepoints outside the Unicode range (permissive decoding
 /// of garbage UTF-32): `General_Category` `Cn`, script `Unknown`.
 pub(super) const DEFAULT_WORD: u16 = 29;
@@ -650,7 +653,7 @@ pub(super) fn word(cp: u32) -> u16 {
 }
 
 /// Direct-indexed words of the Basic Multilingual Plane (u16 LE).
-static UCD_BMP: [u8; 0x2_0000] = *include_bytes!("ucd_bmp.bin");
+static UCD_BMP: [u8; 0x2_0000] = *include_bytes!("bmp.bin");
 
 static STAGE1: [u8; 16384] = [
 	0, 1, 2, 3, 4, 5, 6, 7, 8, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 23, 23,
