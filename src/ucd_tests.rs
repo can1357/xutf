@@ -141,8 +141,8 @@ fn call_site_semantics() {
 	assert_eq!(general_category_group('\t' as u32), GCG::Other);
 
 	// Permissive u32 inputs `char`-based crates cannot classify.
-	assert_eq!(general_category(0xD800), GC::Surrogate);
-	assert_eq!(script(0xD800), Script::Unknown);
+	assert_eq!(general_category(0xd800), GC::Surrogate);
+	assert_eq!(script(0xd800), Script::Unknown);
 	assert_eq!(general_category(0x11_0000), GC::Unassigned);
 	assert_eq!(script(0x11_0000), Script::Unknown);
 	assert_eq!(general_category(u32::MAX), GC::Unassigned);
@@ -155,7 +155,7 @@ fn call_site_semantics() {
 #[test]
 fn trait_matches_free_functions() {
 	use crate::ucd::Ucd;
-	for cp in [0x41u32, 0x0300, 0x4E2D, 0xD800, 0x11_0000, u32::MAX] {
+	for cp in [0x41u32, 0x0300, 0x4e2d, 0xd800, 0x11_0000, u32::MAX] {
 		assert_eq!(Ucd::general_category(cp), general_category(cp));
 		assert_eq!(Ucd::general_category_group(cp), general_category_group(cp));
 		assert_eq!(Ucd::script(cp), script(cp));
