@@ -17,6 +17,14 @@ jobs:
       - run: rustup toolchain install
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
-      - run: cargo publish
+      # Re-tagged releases re-run this job after a successful publish; the
+      # version is immutable on crates.io, so "already exists" is success.
+      - name: cargo publish
+        run: |
+          set -o pipefail
+          if cargo publish 2>&1 | tee publish.log; then
+            exit 0
+          fi
+          grep -q "already exists on crates.io index" publish.log
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
