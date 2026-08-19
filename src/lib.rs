@@ -95,6 +95,7 @@ pub use grapheme::{
 };
 pub use normalize::{
 	IntoUnicodeNormalized, MakeUnicodeNormalized, NormalizationError, ToUnicodeNormalized,
+	canonical_combining_class, is_nfc, is_nfc_codepoints,
 };
 pub use props::UNICODE_VERSION;
 pub use read::{BufReadCharsExt, Chars, CharsRaw, ReadCharError, StreamDecode};

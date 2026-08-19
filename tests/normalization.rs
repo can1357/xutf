@@ -120,3 +120,48 @@ fn normalizes_dense_scalar_sequence_like_unicode_normalization() {
 	assert_eq!(corpus.to_nfd(), reference_nfd(&corpus));
 	assert_eq!(corpus.to_nfc(), reference_nfc(&corpus));
 }
+
+#[test]
+fn is_nfc_quick_check_verdicts() {
+	// Composed stays borrowable; decomposed and mis-ordered do not.
+	assert!(xutf::is_nfc("café résumé"));
+	assert!(xutf::is_nfc("한국어 テスト"));
+	assert!(!xutf::is_nfc("cafe\u{301}")); // NFD combining acute
+	assert!(!xutf::is_nfc("a\u{0316}\u{0301}b")); // ccc 220 after... wait 220 then 230 is ordered; reversed:
+	assert!(!xutf::is_nfc("a\u{0301}\u{0316}b")); // ccc 230 then 220: mis-ordered
+	// Quick-check conservatism: Maybe codepoints report false even when
+	// the text happens to already be NFC.
+	assert!(!xutf::is_nfc("q\u{0301}")); // acute after q composes with nothing, still Maybe
+}
+
+#[test]
+fn is_nfc_codepoints_matches_str_verdict() {
+	let samples = [
+		"plain ascii",
+		"café résumé",
+		"cafe\u{301}",
+		"한국어",
+		"\u{1100}\u{1161}", // decomposed Hangul LV
+		"a\u{0301}\u{0316}b",
+		"👨‍👩‍👧‍👦 🇹🇷",
+		"中文English中文",
+	];
+	for s in samples {
+		assert_eq!(
+			xutf::is_nfc_codepoints(s.chars().map(|c| c as u32)),
+			xutf::is_nfc(s),
+			"verdict drift for {s:?}"
+		);
+	}
+	// Lone surrogate (impossible in str) must be inert, not a panic.
+	assert!(xutf::is_nfc_codepoints([0x41, 0xd800, 0x42]));
+}
+
+#[test]
+fn canonical_combining_class_known_values() {
+	assert_eq!(xutf::canonical_combining_class('a' as u32), 0);
+	assert_eq!(xutf::canonical_combining_class(0x0301), 230); // combining acute
+	assert_eq!(xutf::canonical_combining_class(0x0316), 220); // combining grave below
+	assert_eq!(xutf::canonical_combining_class(0x3099), 8); // kana voicing
+	assert_eq!(xutf::canonical_combining_class(0x110000), 0); // out of range
+}

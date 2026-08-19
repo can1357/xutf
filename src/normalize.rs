@@ -95,6 +95,51 @@ pub trait IntoUnicodeNormalized {
 	fn into_nfd(self) -> String;
 }
 
+/// Reports whether `text` is definitely in NFC form.
+///
+/// Quick-check semantics without allocation: `true` means normalizing is a
+/// no-op; `false` means normalization *may* change the text (`NFC_QC=Maybe`
+/// codepoints and mis-ordered combining marks report `false` without
+/// composing). Use before [`ToUnicodeNormalized::to_nfc`] to keep borrowed
+/// fast paths.
+#[inline]
+pub fn is_nfc(text: &str) -> bool {
+	scan(text, Form::Nfc).normalized
+}
+
+/// [`is_nfc`] over raw codepoints, for callers holding non-UTF-8 text
+/// (UTF-16/UTF-32 units) who want the quick-check without transcoding.
+///
+/// Surrogate and out-of-range values are treated as inert (they normalize
+/// to themselves under permissive decoding). Identical verdicts to
+/// [`is_nfc`] for any sequence of Unicode scalar values.
+pub fn is_nfc_codepoints(codepoints: impl IntoIterator<Item = u32>) -> bool {
+	let mut last_ccc = 0u8;
+	for cp in codepoints {
+		if cp > 0x10ffff {
+			last_ccc = 0;
+			continue;
+		}
+		let word = normalization_word(cp);
+		let ccc = combining_class(word);
+		if (ccc != 0 && last_ccc > ccc) || word & (NFC_NO_BIT | NFC_MAYBE_BIT) != 0 {
+			return false;
+		}
+		last_ccc = ccc;
+	}
+	true
+}
+
+/// Canonical Combining Class (ccc) of a codepoint; 0 for starters,
+/// out-of-range input and unassigned codepoints.
+#[inline]
+pub fn canonical_combining_class(cp: u32) -> u8 {
+	if cp > 0x10ffff {
+		return 0;
+	}
+	combining_class(normalization_word(cp))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Form {
 	Nfc,
