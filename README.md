@@ -31,6 +31,12 @@ roughly 1.5–2× ahead on typical text, and **3–10×** ahead on emoji-heavy i
 - **Terminal text on UTF-8, UTF-16, or UTF-32** — UAX #29 grapheme clusters,
   UAX #11 width, cluster-safe truncate and word wrap, plus SIMD ANSI/VT
   stripping that reuses owned buffers and compacts mutable slices in place.
+- **Scalar property lookups** — NFC/NFD normalization with a SIMD
+  quick-check, plus `General_Category` (fine categories and the
+  `\p{L}`-style groups) and UAX #24 `Script`, one table load per scalar.
+  Free functions or `Ucd` methods on `char`/`u32`; covers the lookup
+  surface of `unicode-normalization`, `unicode-properties` and
+  `unicode-script`.
 - **Strict stream decoding** — `BufReadCharsExt` iterates `char`s straight
   from any `BufRead` in UTF-8/16/32 (either byte order), decoding in batches
   from the reader's own buffer; errors carry the offending bytes. Drop-in for
@@ -39,7 +45,8 @@ roughly 1.5–2× ahead on typical text, and **3–10×** ahead on emoji-heavy i
 - **`#![no_std]`**, zero runtime dependencies, Unicode 17.0 tables generated
   from the UCD.
 - **Differentially tested** — fuzzed against `unicode-segmentation`,
-  exhaustive per-scalar parity with `unicode-width`.
+  exhaustive per-scalar parity with `unicode-width`, `unicode-properties`
+  and `unicode-script`.
 
 ## Benchmarks
 
@@ -348,6 +355,22 @@ let mut input = BufReader::new(&[0x00, 0x68, 0xDC, 0x00][..]);
 let decoded: Vec<_> = input.decode_chars_raw::<Utf16Be>().collect();
 assert_eq!(decoded[0].as_ref().unwrap(), &'h');
 assert_eq!(decoded[1].as_ref().unwrap_err().as_bytes(), &[0xDC, 0x00]);
+```
+
+Scalar property lookups — the `Ucd` trait puts them on `char` and raw
+`u32` codepoints (permissive: surrogates and out-of-range included):
+
+```rust
+use xutf::{GeneralCategory, GeneralCategoryGroup, Script, ToUnicodeNormalized, Ucd};
+
+assert_eq!('中'.script(), Script::Han);
+assert_eq!('½'.general_category(), GeneralCategory::OtherNumber);
+assert_eq!('中'.general_category_group(), GeneralCategoryGroup::Letter);
+assert_eq!(0xD800u32.general_category(), GeneralCategory::Surrogate); // lone surrogate
+
+// NFC with a quick-check fast path: `is_nfc` never allocates.
+assert!(xutf::is_nfc("café"));
+assert_eq!("cafe\u{0301}".to_nfc(), "café");
 ```
 
 Per-character widths match `unicode-width` 0.2.2 exactly (sole exception

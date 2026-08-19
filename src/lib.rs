@@ -21,6 +21,12 @@
 //!   [`IntoAnsiStripped`]). The [`Text`] extension trait exposes them as
 //!   methods on `str` and native code-unit slices. Unicode properties come from
 //!   the generated [`UNICODE_VERSION`] trie (`scripts/gen_props.py`).
+//! - **Scalar property lookups**: NFC/NFD normalization with a SIMD
+//!   quick-check ([`ToUnicodeNormalized`], [`is_nfc`]), plus permissive
+//!   `General_Category` ([`general_category`], [`general_category_group`])
+//!   and UAX #24 script ([`script`]) — the lookup surface of the
+//!   `unicode-normalization`, `unicode-properties` and `unicode-script`
+//!   crates from one table family, also as [`Ucd`] methods on `char`/`u32`.
 //! - **Strict stream decoding** from any [`std::io::BufRead`]
 //!   ([`BufReadCharsExt`]): batch-decoded `char` iteration in every supported
 //!   encoding, with errors that carry the offending bytes ([`ReadCharError`]).
@@ -74,6 +80,9 @@ mod strip;
 mod tables;
 mod text;
 mod truncate;
+mod ucd;
+#[cfg(test)]
+mod ucd_tests;
 mod unit;
 mod utf16;
 mod utf32;
@@ -103,6 +112,10 @@ pub use strip::{IntoAnsiStripped, MakeAnsiStripped, ToAnsiStripped, width_ansi, 
 pub use text::Text;
 pub use truncate::{
 	skip_columns, skip_columns_str, truncate, truncate_measured, truncate_measured_str, truncate_str,
+};
+pub use ucd::{
+	GeneralCategory, GeneralCategoryGroup, Script, Ucd, general_category, general_category_group,
+	script,
 };
 pub use unit::Unit;
 pub use utf8::Utf8;
