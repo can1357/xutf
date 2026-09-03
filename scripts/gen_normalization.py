@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generates compact Unicode 17 NFC/NFD lookup tables."""
+"""Generates compact Unicode 17 NFC/NFD/NFKC/NFKD lookup tables."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ FILES = {
 }
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CACHE = os.path.join(HERE, "ucd")
+CACHE = os.environ.get("UCD_CACHE", os.path.join(HERE, "ucd"))
 OUT = os.path.join(HERE, "..", "src", "normalize_data.rs")
 NUM_CP = 0x110000
 
@@ -42,6 +42,14 @@ DECOMPOSITION_BITS = 11
 DECOMPOSITION_ORDER_BIT = 1 << (DECOMPOSITION_SHIFT + DECOMPOSITION_BITS)
 COMPOSITION_SHIFT = DECOMPOSITION_SHIFT + DECOMPOSITION_BITS + 1
 COMPOSITION_BITS = 32 - COMPOSITION_SHIFT
+# Compatibility (NFKC/NFKD) fields live in the upper 32 bits so the canonical
+# layout below stays untouched.
+NFKD_NO_BIT = 1 << 32
+NFKC_MAYBE_BIT = 1 << 33
+NFKC_NO_BIT = 1 << 34
+NFKD_DECOMPOSITION_SHIFT = 35
+NFKD_DECOMPOSITION_BITS = 12
+NFKD_DECOMPOSITION_ORDER_BIT = 1 << (NFKD_DECOMPOSITION_SHIFT + NFKD_DECOMPOSITION_BITS)
 
 
 def fetch(name: str) -> list[str]:
@@ -60,9 +68,10 @@ def parse_range(raw: str) -> tuple[int, int]:
     return lo, int(bounds[-1], 16)
 
 
-def parse_unicode_data() -> tuple[list[int], dict[int, tuple[int, ...]]]:
+def parse_unicode_data() -> tuple[list[int], dict[int, tuple[int, ...]], dict[int, tuple[int, ...]]]:
     ccc = [0] * NUM_CP
     mappings: dict[int, tuple[int, ...]] = {}
+    compat_mappings: dict[int, tuple[int, ...]] = {}
     pending_range: tuple[int, int] | None = None
 
     for raw in fetch("UnicodeData.txt"):
@@ -83,17 +92,25 @@ def parse_unicode_data() -> tuple[list[int], dict[int, tuple[int, ...]]]:
 
         ccc[cp] = combining
         decomposition = fields[5]
-        if decomposition and not decomposition.startswith("<"):
+        if not decomposition:
+            continue
+        if decomposition.startswith("<"):
+            _, _, rest = decomposition[1:].partition("> ")
+            compat_mappings[cp] = tuple(int(part, 16) for part in rest.split())
+        else:
             mappings[cp] = tuple(int(part, 16) for part in decomposition.split())
 
     assert pending_range is None
-    return ccc, mappings
+    return ccc, mappings, compat_mappings
 
 
-def parse_normalization_properties() -> tuple[set[int], set[int], set[int]]:
+def parse_normalization_properties() -> tuple[set[int], set[int], set[int], set[int], set[int], set[int]]:
     nfd_no: set[int] = set()
     nfc_maybe: set[int] = set()
     nfc_no: set[int] = set()
+    nfkd_no: set[int] = set()
+    nfkc_maybe: set[int] = set()
+    nfkc_no: set[int] = set()
 
     for raw in fetch("DerivedNormalizationProps.txt"):
         line = raw.split("#", 1)[0].strip()
@@ -110,10 +127,16 @@ def parse_normalization_properties() -> tuple[set[int], set[int], set[int]]:
             target = nfc_maybe
         elif prop == "NFC_QC" and value == "N":
             target = nfc_no
+        elif prop == "NFKD_QC" and value == "N":
+            target = nfkd_no
+        elif prop == "NFKC_QC" and value == "M":
+            target = nfkc_maybe
+        elif prop == "NFKC_QC" and value == "N":
+            target = nfkc_no
         if target is not None:
             target.update(range(lo, hi + 1))
 
-    return nfd_no, nfc_maybe, nfc_no
+    return nfd_no, nfc_maybe, nfc_no, nfkd_no, nfkc_maybe, nfkc_no
 
 
 def hangul_decomposition(cp: int) -> tuple[int, ...] | None:
@@ -164,8 +187,8 @@ def emit_array(
 
 
 def emit() -> tuple[str, str]:
-    ccc, mappings = parse_unicode_data()
-    nfd_no, nfc_maybe, nfc_no = parse_normalization_properties()
+    ccc, mappings, compat_mappings = parse_unicode_data()
+    nfd_no, nfc_maybe, nfc_no, nfkd_no, nfkc_maybe, nfkc_no = parse_normalization_properties()
 
     @functools.cache
     def fully_decompose(cp: int) -> tuple[int, ...]:
@@ -176,6 +199,18 @@ def emit() -> tuple[str, str]:
         if mapping is None:
             return (cp,)
         return tuple(part for child in mapping for part in fully_decompose(child))
+
+    all_mappings = {**mappings, **compat_mappings}
+
+    @functools.cache
+    def fully_decompose_compat(cp: int) -> tuple[int, ...]:
+        hangul = hangul_decomposition(cp)
+        if hangul is not None:
+            return hangul
+        mapping = all_mappings.get(cp)
+        if mapping is None:
+            return (cp,)
+        return tuple(part for child in mapping for part in fully_decompose_compat(child))
 
     decomposition_ids: dict[tuple[int, ...], int] = {}
     decomposition_by_cp: dict[int, int] = {}
@@ -198,6 +233,30 @@ def emit() -> tuple[str, str]:
         assert len(decomposition) < 8
         records.append(len(decomposition_chars) << 3 | len(decomposition))
         decomposition_chars.extend(decomposition)
+
+    nfkd_decomposition_ids: dict[tuple[int, ...], int] = {}
+    nfkd_decomposition_by_cp: dict[int, int] = {}
+    for cp in sorted(all_mappings):
+        decomposition = fully_decompose_compat(cp)
+        index = nfkd_decomposition_ids.setdefault(decomposition, len(nfkd_decomposition_ids) + 1)
+        nfkd_decomposition_by_cp[cp] = index
+
+    assert len(nfkd_decomposition_ids) < 1 << NFKD_DECOMPOSITION_BITS
+    ordered_nfkd: list[tuple[int, ...] | None] = [None] * (len(nfkd_decomposition_ids) + 1)
+    for decomposition, index in nfkd_decomposition_ids.items():
+        ordered_nfkd[index] = decomposition
+
+    # Compatibility expansions reach 18 codepoints, so the NFKD record keeps
+    # the length in five bits instead of three.
+    nfkd_records = [0]
+    nfkd_decomposition_chars: list[int] = []
+    max_nfkd_decomposition = 0
+    for decomposition in ordered_nfkd[1:]:
+        assert decomposition is not None
+        max_nfkd_decomposition = max(max_nfkd_decomposition, len(decomposition))
+        assert len(decomposition) < 32
+        nfkd_records.append(len(nfkd_decomposition_chars) << 5 | len(decomposition))
+        nfkd_decomposition_chars.extend(decomposition)
 
     compositions: dict[int, list[tuple[int, int]]] = defaultdict(list)
     for composite, mapping in mappings.items():
@@ -232,6 +291,16 @@ def emit() -> tuple[str, str]:
         if decomposition_id and any(ccc[part] for part in ordered_decompositions[decomposition_id]):
             word |= DECOMPOSITION_ORDER_BIT
         word |= composition_ids.get(cp, 0) << COMPOSITION_SHIFT
+        if cp in nfkd_no:
+            word |= NFKD_NO_BIT
+        if cp in nfkc_maybe:
+            word |= NFKC_MAYBE_BIT
+        elif cp in nfkc_no:
+            word |= NFKC_NO_BIT
+        nfkd_decomposition_id = nfkd_decomposition_by_cp.get(cp, 0)
+        word |= nfkd_decomposition_id << NFKD_DECOMPOSITION_SHIFT
+        if nfkd_decomposition_id and any(ccc[part] for part in ordered_nfkd[nfkd_decomposition_id]):
+            word |= NFKD_DECOMPOSITION_ORDER_BIT
         properties[cp] = word
 
     size, shift, stage1, blocks = best_trie(properties)
@@ -253,10 +322,10 @@ def emit() -> tuple[str, str]:
     emit_array(
         lines,
         "NORMALIZATION_STAGE2",
-        "u32",
+        "u64",
         stage2,
-        lambda value: f"0x{value:08x}",
-        8,
+        lambda value: f"0x{value:016x}",
+        4,
     )
     emit_array(
         lines,
@@ -271,6 +340,22 @@ def emit() -> tuple[str, str]:
         "DECOMPOSITION_CHARS",
         "u32",
         decomposition_chars,
+        lambda value: f"0x{value:06x}",
+        10,
+    )
+    emit_array(
+        lines,
+        "NFKD_DECOMPOSITION_RECORDS",
+        "u32",
+        nfkd_records,
+        lambda value: f"0x{value:06x}",
+        10,
+    )
+    emit_array(
+        lines,
+        "NFKD_DECOMPOSITION_CHARS",
+        "u32",
+        nfkd_decomposition_chars,
         lambda value: f"0x{value:06x}",
         10,
     )
@@ -293,6 +378,7 @@ def emit() -> tuple[str, str]:
 
     stats = (
         f"UCD {version[0]}.{version[1]}.{version[2]}: trie block {1 << shift}, "
+        f"{len(nfkd_decomposition_ids)} NFKD decompositions (max {max_nfkd_decomposition}), "
         f"{len(blocks)} unique blocks, {size} bytes; {len(decomposition_ids)} decompositions "
         f"(max {max_decomposition}), {len(composition_pairs)} compositions "
         f"(max {max_compositions}/starter)"

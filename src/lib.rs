@@ -21,12 +21,13 @@
 //!   [`IntoAnsiStripped`]). The [`Text`] extension trait exposes them as
 //!   methods on `str` and native code-unit slices. Unicode properties come from
 //!   the generated [`UNICODE_VERSION`] trie (`scripts/gen_props.py`).
-//! - **Scalar property lookups**: NFC/NFD normalization with a SIMD quick-check
-//!   ([`ToUnicodeNormalized`], [`is_nfc`]), plus permissive `General_Category`
-//!   ([`general_category`], [`general_category_group`]) and UAX #24 script
-//!   ([`script`]) — the lookup surface of the `unicode-normalization`,
-//!   `unicode-properties` and `unicode-script` crates from one table family,
-//!   also as [`Ucd`] methods on `char`/`u32`.
+//! - **Scalar property lookups**: NFC/NFD/NFKC/NFKD normalization with a SIMD
+//!   quick-check ([`ToUnicodeNormalized`], [`is_nfc`], [`is_nfkc`]), plus
+//!   permissive `General_Category` ([`general_category`],
+//!   [`general_category_group`]) and UAX #24 script ([`script`]) — the lookup
+//!   surface of the `unicode-normalization`, `unicode-properties` and
+//!   `unicode-script` crates from one table family, also as [`Ucd`] methods on
+//!   `char`/`u32`.
 //! - **Strict stream decoding** from any [`std::io::BufRead`]
 //!   ([`BufReadCharsExt`]): batch-decoded `char` iteration in every supported
 //!   encoding, with errors that carry the offending bytes ([`ReadCharError`]).
@@ -104,7 +105,7 @@ pub use grapheme::{
 };
 pub use normalize::{
 	IntoUnicodeNormalized, MakeUnicodeNormalized, NormalizationError, ToUnicodeNormalized,
-	canonical_combining_class, is_nfc, is_nfc_codepoints,
+	canonical_combining_class, is_nfc, is_nfc_codepoints, is_nfkc, is_nfkc_codepoints,
 };
 pub use props::UNICODE_VERSION;
 pub use read::{BufReadCharsExt, Chars, CharsRaw, ReadCharError, StreamDecode};

@@ -1,6 +1,6 @@
 #![allow(clippy::unicode_not_nfc, reason = "benchmarks intentionally compare decomposed text")]
 
-//! NFC/NFD benchmark against `unicode-normalization`.
+//! NFC/NFD/NFKC/NFKD benchmark against `unicode-normalization`.
 //!
 //! Run: `cargo bench --bench normalize`
 
@@ -40,78 +40,92 @@ fn inputs() -> Vec<(&'static str, String)> {
 			"mixed",
 			build_input("Fast café, A\u{030a}, 한글과 한글, q\u{0307}\u{0323}, 界面, 🦀. ", TARGET),
 		),
+		("compat", build_input("ﬁ ﬂ ＡＢＣ ² ³ µ Å Å ① ② ™ ｶﾀｶﾅ café. ", TARGET)),
 	]
+}
+
+#[derive(Clone, Copy)]
+enum Form {
+	Nfc,
+	Nfd,
+	Nfkc,
+	Nfkd,
+}
+
+impl Form {
+	const fn title(self) -> &'static str {
+		match self {
+			Self::Nfc => "NFC normalization",
+			Self::Nfd => "NFD normalization",
+			Self::Nfkc => "NFKC normalization",
+			Self::Nfkd => "NFKD normalization",
+		}
+	}
+
+	fn make_normalized(self, working: &mut String) {
+		match self {
+			Self::Nfc => working.make_nfc().unwrap(),
+			Self::Nfd => working.make_nfd().unwrap(),
+			Self::Nfkc => working.make_nfkc().unwrap(),
+			Self::Nfkd => working.make_nfkd().unwrap(),
+		}
+	}
+
+	fn to_normalized(self, input: &str) -> String {
+		match self {
+			Self::Nfc => input.to_nfc(),
+			Self::Nfd => input.to_nfd(),
+			Self::Nfkc => input.to_nfkc(),
+			Self::Nfkd => input.to_nfkd(),
+		}
+	}
+
+	fn reference(self, input: &str) -> String {
+		match self {
+			Self::Nfc => input.nfc().collect(),
+			Self::Nfd => input.nfd().collect(),
+			Self::Nfkc => input.nfkc().collect(),
+			Self::Nfkd => input.nfkd().collect(),
+		}
+	}
 }
 
 fn run_ratio_table() {
 	let inputs = inputs();
-	let nfc_rows: Vec<_> = inputs
-		.par_iter()
-		.map(|(name, input)| {
-			let in_place = measure_with_setup(
-				input.len(),
-				|| {
-					let mut working = String::with_capacity(input.len() * 3);
-					working.push_str(input);
-					working
-				},
-				|working| {
-					working.make_nfc().unwrap();
-					black_box(working.as_bytes());
-					working.len()
-				},
-			);
-			let owned = measure(input.len(), || {
-				let output = input.to_nfc();
-				black_box(output.as_bytes());
-				output.len()
-			});
-			let reference = measure(input.len(), || {
-				let output: String = input.nfc().collect();
-				black_box(output.as_bytes());
-				output.len()
-			});
-			(*name, vec![in_place, reference, owned])
-		})
-		.collect();
-	print_ratio_table(
-		"NFC normalization",
-		&["xutf in-place", "unicode-normalization", "xutf owned"],
-		&nfc_rows,
-	);
-
-	let nfd_rows: Vec<_> = inputs
-		.par_iter()
-		.map(|(name, input)| {
-			let in_place = measure_with_setup(
-				input.len(),
-				|| {
-					let mut working = String::with_capacity(input.len() * 3);
-					working.push_str(input);
-					working
-				},
-				|working| {
-					working.make_nfd().unwrap();
-					black_box(working.as_bytes());
-					working.len()
-				},
-			);
-			let owned = measure(input.len(), || {
-				let output = input.to_nfd();
-				black_box(output.as_bytes());
-				output.len()
-			});
-			let reference = measure(input.len(), || {
-				let output: String = input.nfd().collect();
-				black_box(output.as_bytes());
-				output.len()
-			});
-			(*name, vec![in_place, reference, owned])
-		})
-		.collect();
-	print_ratio_table(
-		"NFD normalization",
-		&["xutf in-place", "unicode-normalization", "xutf owned"],
-		&nfd_rows,
-	);
+	for form in [Form::Nfc, Form::Nfd, Form::Nfkc, Form::Nfkd] {
+		let rows: Vec<_> = inputs
+			.par_iter()
+			.map(|(name, input)| {
+				let in_place = measure_with_setup(
+					input.len(),
+					|| {
+						let mut working = String::with_capacity(input.len() * 3);
+						working.push_str(input);
+						working
+					},
+					|working| {
+						form.make_normalized(working);
+						black_box(working.as_bytes());
+						working.len()
+					},
+				);
+				let owned = measure(input.len(), || {
+					let output = form.to_normalized(input);
+					black_box(output.as_bytes());
+					output.len()
+				});
+				let reference = measure(input.len(), || {
+					let output = form.reference(input);
+					black_box(output.as_bytes());
+					output.len()
+				});
+				(*name, vec![in_place, reference, owned])
+			})
+			.collect();
+		print_ratio_table(
+			form.title(),
+			&["xutf in-place", "unicode-normalization", "xutf owned"],
+			&rows,
+		);
+	}
 }

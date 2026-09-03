@@ -31,7 +31,7 @@ roughly 1.5–2× ahead on typical text, and **3–10×** ahead on emoji-heavy i
 - **Terminal text on UTF-8, UTF-16, or UTF-32** — UAX #29 grapheme clusters,
   UAX #11 width, cluster-safe truncate and word wrap, plus SIMD ANSI/VT
   stripping that reuses owned buffers and compacts mutable slices in place.
-- **Scalar property lookups** — NFC/NFD normalization with a SIMD
+- **Scalar property lookups** — NFC/NFD/NFKC/NFKD normalization with a SIMD
   quick-check, plus `General_Category` (fine categories and the
   `\p{L}`-style groups) and UAX #24 `Script`, one table load per scalar.
   Free functions or `Ucd` methods on `char`/`u32`; covers the lookup

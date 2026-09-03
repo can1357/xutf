@@ -1,9 +1,11 @@
-//! Unicode 17 NFC/NFD normalization with a SIMD quick-check fast path.
+//! Unicode 17 NFC/NFD/NFKC/NFKD normalization with a SIMD quick-check fast
+//! path.
 //!
 //! Quick-check-positive strings return from the in-place API without writes. A
 //! 64-lane UTF-8 scan skips ASCII, while compact generated tables drive
-//! canonical decomposition, ordering, and composition for non-ASCII text.
-//! Normalization uses the string's own allocation and no auxiliary allocation.
+//! canonical and compatibility decomposition, ordering, and composition for
+//! non-ASCII text. Normalization uses the string's own allocation and no
+//! auxiliary allocation.
 
 use alloc::{string::String, vec::Vec};
 use core::{
@@ -14,14 +16,21 @@ use core::{
 #[path = "normalize_data.rs"]
 mod data;
 
-const CCC_MASK: u32 = 0xff;
-const NFD_NO_BIT: u32 = 1 << 8;
-const NFC_MAYBE_BIT: u32 = 1 << 9;
-const NFC_NO_BIT: u32 = 1 << 10;
+const CCC_MASK: u64 = 0xff;
+const NFD_NO_BIT: u64 = 1 << 8;
+const NFC_MAYBE_BIT: u64 = 1 << 9;
+const NFC_NO_BIT: u64 = 1 << 10;
 const DECOMPOSITION_SHIFT: u32 = 11;
-const DECOMPOSITION_MASK: u32 = 0x07ff;
-const DECOMPOSITION_ORDER_BIT: u32 = 1 << 22;
+const DECOMPOSITION_MASK: u64 = 0x07ff;
+const DECOMPOSITION_ORDER_BIT: u64 = 1 << 22;
 const COMPOSITION_SHIFT: u32 = 23;
+const COMPOSITION_MASK: u64 = 0x01ff;
+const NFKD_NO_BIT: u64 = 1 << 32;
+const NFKC_MAYBE_BIT: u64 = 1 << 33;
+const NFKC_NO_BIT: u64 = 1 << 34;
+const NFKD_DECOMPOSITION_SHIFT: u32 = 35;
+const NFKD_DECOMPOSITION_MASK: u64 = 0x0fff;
+const NFKD_DECOMPOSITION_ORDER_BIT: u64 = 1 << 47;
 const ORDER_STACK: usize = 16;
 const CODEPOINT_MASK: u64 = (1 << 21) - 1;
 
@@ -75,24 +84,43 @@ pub trait MakeUnicodeNormalized {
 
 	/// Converts this string to NFD using only its existing allocation.
 	fn make_nfd(&mut self) -> Result<(), NormalizationError>;
+
+	/// Converts this string to NFKC using only its existing allocation.
+	fn make_nfkc(&mut self) -> Result<(), NormalizationError>;
+
+	/// Converts this string to NFKD using only its existing allocation.
+	fn make_nfkd(&mut self) -> Result<(), NormalizationError>;
 }
 
-/// Creates owned NFC or NFD text from a borrowed string.
+/// Creates owned NFC, NFD, NFKC or NFKD text from a borrowed string.
 pub trait ToUnicodeNormalized {
 	/// Copies this string once and returns its NFC form.
 	fn to_nfc(&self) -> String;
 
 	/// Copies this string once and returns its NFD form.
 	fn to_nfd(&self) -> String;
+
+	/// Copies this string once and returns its NFKC form.
+	fn to_nfkc(&self) -> String;
+
+	/// Copies this string once and returns its NFKD form.
+	fn to_nfkd(&self) -> String;
 }
 
-/// Converts an owned string to NFC or NFD while reusing its allocation.
+/// Converts an owned string to NFC, NFD, NFKC or NFKD while reusing its
+/// allocation.
 pub trait IntoUnicodeNormalized {
 	/// Returns this string in NFC, growing its allocation only when required.
 	fn into_nfc(self) -> String;
 
 	/// Returns this string in NFD, growing its allocation only when required.
 	fn into_nfd(self) -> String;
+
+	/// Returns this string in NFKC, growing its allocation only when required.
+	fn into_nfkc(self) -> String;
+
+	/// Returns this string in NFKD, growing its allocation only when required.
+	fn into_nfkd(self) -> String;
 }
 
 /// Reports whether `text` is definitely in NFC form.
@@ -130,6 +158,41 @@ pub fn is_nfc_codepoints(codepoints: impl IntoIterator<Item = u32>) -> bool {
 	true
 }
 
+/// Reports whether `text` is definitely in NFKC form.
+///
+/// Quick-check semantics without allocation: `true` means normalizing is a
+/// no-op; `false` means normalization *may* change the text (`NFKC_QC=Maybe`
+/// codepoints and mis-ordered combining marks report `false` without
+/// composing). Use before [`ToUnicodeNormalized::to_nfkc`] to keep borrowed
+/// fast paths.
+#[inline]
+pub fn is_nfkc(text: &str) -> bool {
+	scan(text, Form::Nfkc).normalized
+}
+
+/// [`is_nfkc`] over raw codepoints, for callers holding non-UTF-8 text
+/// (UTF-16/UTF-32 units) who want the quick-check without transcoding.
+///
+/// Surrogate and out-of-range values are treated as inert (they normalize
+/// to themselves under permissive decoding). Identical verdicts to
+/// [`is_nfkc`] for any sequence of Unicode scalar values.
+pub fn is_nfkc_codepoints(codepoints: impl IntoIterator<Item = u32>) -> bool {
+	let mut last_ccc = 0u8;
+	for cp in codepoints {
+		if cp > 0x10ffff {
+			last_ccc = 0;
+			continue;
+		}
+		let word = normalization_word(cp);
+		let ccc = combining_class(word);
+		if (ccc != 0 && last_ccc > ccc) || word & (NFKC_NO_BIT | NFKC_MAYBE_BIT) != 0 {
+			return false;
+		}
+		last_ccc = ccc;
+	}
+	true
+}
+
 /// Canonical Combining Class (ccc) of a codepoint; 0 for starters,
 /// out-of-range input and unassigned codepoints.
 #[inline]
@@ -144,6 +207,20 @@ pub fn canonical_combining_class(cp: u32) -> u8 {
 enum Form {
 	Nfc,
 	Nfd,
+	Nfkc,
+	Nfkd,
+}
+
+impl Form {
+	/// Whether this form ends with canonical composition (NFC/NFKC).
+	const fn is_composed(self) -> bool {
+		matches!(self, Self::Nfc | Self::Nfkc)
+	}
+
+	/// Whether this form decomposes compatibility characters (NFKC/NFKD).
+	const fn is_compat(self) -> bool {
+		matches!(self, Self::Nfkc | Self::Nfkd)
+	}
 }
 
 #[derive(Clone, Copy)]
@@ -157,7 +234,7 @@ struct Scan {
 }
 
 #[inline(always)]
-fn normalization_word(cp: u32) -> u32 {
+fn normalization_word(cp: u32) -> u64 {
 	debug_assert!(cp <= 0x10ffff);
 	let cp = cp as usize;
 	let block = data::NORMALIZATION_STAGE1[cp >> data::NORMALIZATION_SHIFT] as usize;
@@ -166,12 +243,12 @@ fn normalization_word(cp: u32) -> u32 {
 }
 
 #[inline(always)]
-const fn combining_class(word: u32) -> u8 {
+const fn combining_class(word: u64) -> u8 {
 	(word & CCC_MASK) as u8
 }
 
 #[inline(always)]
-fn decomposition(word: u32) -> Option<&'static [u32]> {
+fn decomposition(word: u64) -> Option<&'static [u32]> {
 	let index = (word >> DECOMPOSITION_SHIFT) & DECOMPOSITION_MASK;
 	if index == 0 {
 		return None;
@@ -183,12 +260,24 @@ fn decomposition(word: u32) -> Option<&'static [u32]> {
 }
 
 #[inline(always)]
+fn nfkd_decomposition(word: u64) -> Option<&'static [u32]> {
+	let index = (word >> NFKD_DECOMPOSITION_SHIFT) & NFKD_DECOMPOSITION_MASK;
+	if index == 0 {
+		return None;
+	}
+	let record = data::NFKD_DECOMPOSITION_RECORDS[index as usize] as usize;
+	let start = record >> 5;
+	let len = record & 31;
+	Some(&data::NFKD_DECOMPOSITION_CHARS[start..start + len])
+}
+
+#[inline(always)]
 const fn is_hangul_syllable(cp: u32) -> bool {
 	cp.wrapping_sub(S_BASE) < S_COUNT
 }
 
 #[inline(always)]
-fn for_each_decomposed(cp: u32, word: u32, mut emit: impl FnMut(u32)) {
+fn for_each_decomposed(cp: u32, word: u64, compat: bool, mut emit: impl FnMut(u32)) {
 	if is_hangul_syllable(cp) {
 		let index = cp - S_BASE;
 		emit(L_BASE + index / N_COUNT);
@@ -197,12 +286,23 @@ fn for_each_decomposed(cp: u32, word: u32, mut emit: impl FnMut(u32)) {
 		if trailing != 0 {
 			emit(T_BASE + trailing);
 		}
-	} else if let Some(mapped) = decomposition(word) {
+	} else if let Some(mapped) = normalization_decomposition(word, compat) {
 		for &part in mapped {
 			emit(part);
 		}
 	} else {
 		emit(cp);
+	}
+}
+
+/// Canonical decomposition for NFC/NFD, full compatibility decomposition for
+/// NFKC/NFKD.
+#[inline(always)]
+fn normalization_decomposition(word: u64, compat: bool) -> Option<&'static [u32]> {
+	if compat {
+		nfkd_decomposition(word)
+	} else {
+		decomposition(word)
 	}
 }
 
@@ -220,12 +320,12 @@ const fn utf8_len(cp: u32) -> usize {
 }
 
 #[inline(always)]
-fn decomposed_utf8_len(cp: u32, word: u32) -> usize {
-	if !is_hangul_syllable(cp) && decomposition(word).is_none() {
+fn decomposed_utf8_len(cp: u32, word: u64, compat: bool) -> usize {
+	if !is_hangul_syllable(cp) && normalization_decomposition(word, compat).is_none() {
 		return utf8_len(cp);
 	}
 	let mut len = 0;
-	for_each_decomposed(cp, word, |part| len += utf8_len(part));
+	for_each_decomposed(cp, word, compat, |part| len += utf8_len(part));
 	len
 }
 
@@ -296,9 +396,9 @@ unsafe fn encode_utf8_ptr(cp: u32, output: *mut u8) -> usize {
 }
 
 #[inline(always)]
-fn write_decomposition(cp: u32, word: u32, output: &mut [u8]) -> usize {
+fn write_decomposition(cp: u32, word: u64, compat: bool, output: &mut [u8]) -> usize {
 	let mut written = 0;
-	for_each_decomposed(cp, word, |part| {
+	for_each_decomposed(cp, word, compat, |part| {
 		written += encode_utf8(part, &mut output[written..]);
 	});
 	written
@@ -309,9 +409,9 @@ fn write_decomposition(cp: u32, word: u32, output: &mut [u8]) -> usize {
 /// # Safety
 /// `output` must have room for [`decomposed_utf8_len`] bytes.
 #[inline(always)]
-unsafe fn write_decomposition_ptr(cp: u32, word: u32, output: *mut u8) -> usize {
+unsafe fn write_decomposition_ptr(cp: u32, word: u64, compat: bool, output: *mut u8) -> usize {
 	let mut written = 0;
-	for_each_decomposed(cp, word, |part| {
+	for_each_decomposed(cp, word, compat, |part| {
 		// SAFETY: the caller reserves the full decomposition and each prior write
 		// advances within that region.
 		written += unsafe { encode_utf8_ptr(part, output.add(written)) };
@@ -415,7 +515,7 @@ fn compose_pair(first: u32, second: u32) -> Option<u32> {
 	if let Some(composite) = compose_hangul(first, second) {
 		return Some(composite);
 	}
-	let group = (normalization_word(first) >> COMPOSITION_SHIFT) as usize;
+	let group = ((normalization_word(first) >> COMPOSITION_SHIFT) & COMPOSITION_MASK) as usize;
 	if group == 0 {
 		return None;
 	}
@@ -440,7 +540,8 @@ fn compose_pair(first: u32, second: u32) -> Option<u32> {
 }
 
 #[inline]
-fn decomposition_workspace(bytes: &[u8]) -> (usize, bool) {
+fn decomposition_workspace(bytes: &[u8], compat: bool) -> (usize, bool) {
+	let no_bit = if compat { NFKD_NO_BIT } else { NFD_NO_BIT };
 	let mut at = 0;
 	let mut required = 0;
 	let mut shrinks = false;
@@ -455,10 +556,10 @@ fn decomposition_workspace(bytes: &[u8]) -> (usize, bool) {
 		}
 		let (cp, width) = decode_utf8(bytes, at);
 		let word = normalization_word(cp);
-		let decomposed_len = if word & NFD_NO_BIT == 0 {
+		let decomposed_len = if word & no_bit == 0 {
 			width
 		} else {
-			decomposed_utf8_len(cp, word)
+			decomposed_utf8_len(cp, word, compat)
 		};
 		required += decomposed_len;
 		shrinks |= decomposed_len < width;
@@ -484,7 +585,7 @@ fn scan(input: &str, form: Form) -> Scan {
 	while at < bytes.len() {
 		let ascii = ascii_prefix(&bytes[at..]);
 		if ascii != 0 {
-			if form == Form::Nfd {
+			if !form.is_composed() {
 				nfd_len += ascii;
 			}
 			at += ascii;
@@ -505,11 +606,16 @@ fn scan(input: &str, form: Form) -> Scan {
 			segment_len += 1;
 			stack_order &= segment_len <= ORDER_STACK;
 		}
-		if form == Form::Nfd {
-			let decomposed_len = if word & NFD_NO_BIT == 0 {
+		if !form.is_composed() {
+			let no_bit = if form.is_compat() {
+				NFKD_NO_BIT
+			} else {
+				NFD_NO_BIT
+			};
+			let decomposed_len = if word & no_bit == 0 {
 				width
 			} else {
-				decomposed_utf8_len(cp, word)
+				decomposed_utf8_len(cp, word, form.is_compat())
 			};
 			nfd_len += decomposed_len;
 			shrinks |= decomposed_len < width;
@@ -520,25 +626,46 @@ fn scan(input: &str, form: Form) -> Scan {
 		}
 
 		match form {
-			Form::Nfd => {
-				let decomposes = word & NFD_NO_BIT != 0;
+			Form::Nfd | Form::Nfkd => {
+				let no_bit = if form.is_compat() {
+					NFKD_NO_BIT
+				} else {
+					NFD_NO_BIT
+				};
+				let order_bit = if form.is_compat() {
+					NFKD_DECOMPOSITION_ORDER_BIT
+				} else {
+					DECOMPOSITION_ORDER_BIT
+				};
+				let decomposes = word & no_bit != 0;
 				decompose |= decomposes;
-				reorder |= decomposes && word & DECOMPOSITION_ORDER_BIT != 0;
+				reorder |= decomposes && word & order_bit != 0;
 				normalized &= !decomposes;
 				last_ccc = ccc;
 			},
-			Form::Nfc => {
-				let excluded = word & NFC_NO_BIT != 0;
-				let maybe = word & NFC_MAYBE_BIT != 0;
+			Form::Nfc | Form::Nfkc => {
+				let compat = form.is_compat();
+				let excluded = word & if compat { NFKC_NO_BIT } else { NFC_NO_BIT } != 0;
+				let maybe = word
+					& if compat {
+						NFKC_MAYBE_BIT
+					} else {
+						NFC_MAYBE_BIT
+					} != 0;
+				let order_bit = if compat {
+					NFKD_DECOMPOSITION_ORDER_BIT
+				} else {
+					DECOMPOSITION_ORDER_BIT
+				};
 				normalized &= !excluded && !maybe;
 				decompose |= excluded;
-				reorder |= excluded && word & DECOMPOSITION_ORDER_BIT != 0;
+				reorder |= excluded && word & order_bit != 0;
 				if maybe && starter_risky {
 					decompose = true;
 					reorder = true;
 				}
 				if ccc == 0 {
-					starter_risky = decomposition(word).is_some();
+					starter_risky = normalization_decomposition(word, compat).is_some();
 				}
 				last_ccc = ccc;
 			},
@@ -546,9 +673,9 @@ fn scan(input: &str, form: Form) -> Scan {
 		at += width;
 	}
 
-	if form == Form::Nfc {
+	if form.is_composed() {
 		if decompose {
-			(nfd_len, shrinks) = decomposition_workspace(bytes);
+			(nfd_len, shrinks) = decomposition_workspace(bytes, form.is_compat());
 		} else {
 			nfd_len = bytes.len();
 		}
@@ -558,7 +685,7 @@ fn scan(input: &str, form: Form) -> Scan {
 }
 
 #[inline]
-fn shrink_decompositions(bytes: &mut Vec<u8>) {
+fn shrink_decompositions(bytes: &mut Vec<u8>, compat: bool) {
 	let original_len = bytes.len();
 	let mut read = 0;
 	let mut write = 0;
@@ -575,9 +702,9 @@ fn shrink_decompositions(bytes: &mut Vec<u8>) {
 
 		let (cp, width) = decode_utf8(bytes, read);
 		let word = normalization_word(cp);
-		let decomposed_len = decomposed_utf8_len(cp, word);
+		let decomposed_len = decomposed_utf8_len(cp, word, compat);
 		if decomposed_len < width {
-			let written = write_decomposition(cp, word, &mut bytes[write..]);
+			let written = write_decomposition(cp, word, compat, &mut bytes[write..]);
 			debug_assert_eq!(written, decomposed_len);
 			write += written;
 		} else {
@@ -601,7 +728,7 @@ const fn previous_char_start(bytes: &[u8]) -> usize {
 }
 
 #[inline]
-fn expand_decompositions(bytes: &mut Vec<u8>, required: usize) {
+fn expand_decompositions(bytes: &mut Vec<u8>, required: usize, compat: bool) {
 	let source_len = bytes.len();
 	debug_assert!(required >= source_len);
 	debug_assert!(required <= bytes.capacity());
@@ -624,13 +751,13 @@ fn expand_decompositions(bytes: &mut Vec<u8>, required: usize) {
 		let (cp, width) = decode_utf8(bytes, start);
 		debug_assert_eq!(start + width, read);
 		let word = normalization_word(cp);
-		let decomposed_len = decomposed_utf8_len(cp, word);
+		let decomposed_len = decomposed_utf8_len(cp, word, compat);
 		write -= decomposed_len;
-		if is_hangul_syllable(cp) || decomposition(word).is_some() {
+		if is_hangul_syllable(cp) || normalization_decomposition(word, compat).is_some() {
 			// SAFETY: `write..write + decomposed_len` lies in reserved capacity and
 			// cannot overlap unprocessed input because every remaining mapping is
 			// non-shrinking after `shrink_decompositions`.
-			let written = unsafe { write_decomposition_ptr(cp, word, output.add(write)) };
+			let written = unsafe { write_decomposition_ptr(cp, word, compat, output.add(write)) };
 			debug_assert_eq!(written, decomposed_len);
 		} else {
 			// SAFETY: the same directional invariant leaves the source initialized
@@ -647,11 +774,11 @@ fn expand_decompositions(bytes: &mut Vec<u8>, required: usize) {
 }
 
 #[inline]
-fn decompose_in_place(bytes: &mut Vec<u8>, required: usize, shrinks: bool) {
+fn decompose_in_place(bytes: &mut Vec<u8>, required: usize, shrinks: bool, compat: bool) {
 	if shrinks {
-		shrink_decompositions(bytes);
+		shrink_decompositions(bytes, compat);
 	}
-	expand_decompositions(bytes, required);
+	expand_decompositions(bytes, required, compat);
 }
 
 #[inline]
@@ -827,19 +954,19 @@ fn normalize_scanned(input: &mut String, form: Form, scan: Scan) {
 	// SAFETY: all transformations below preserve scalar boundaries and encode
 	// only valid Unicode scalars before the mutable vector borrow ends.
 	let bytes = unsafe { input.as_mut_vec() };
-	if form == Form::Nfc && !scan.decompose && scan.reorder && scan.stack_order {
+	if form.is_composed() && !scan.decompose && scan.reorder && scan.stack_order {
 		order_and_compose_in_place(bytes);
 		return;
 	}
 	if scan.decompose {
-		decompose_in_place(bytes, scan.nfd_len, scan.shrinks);
+		decompose_in_place(bytes, scan.nfd_len, scan.shrinks, form.is_compat());
 		if scan.reorder {
 			canonical_order(bytes);
 		}
 	} else if scan.reorder {
 		canonical_order(bytes);
 	}
-	if form == Form::Nfc {
+	if form.is_composed() {
 		compose_in_place(bytes);
 	}
 }
@@ -892,6 +1019,16 @@ impl MakeUnicodeNormalized for String {
 	fn make_nfd(&mut self) -> Result<(), NormalizationError> {
 		make_normalized(self, Form::Nfd)
 	}
+
+	#[inline]
+	fn make_nfkc(&mut self) -> Result<(), NormalizationError> {
+		make_normalized(self, Form::Nfkc)
+	}
+
+	#[inline]
+	fn make_nfkd(&mut self) -> Result<(), NormalizationError> {
+		make_normalized(self, Form::Nfkd)
+	}
 }
 
 impl ToUnicodeNormalized for str {
@@ -904,6 +1041,16 @@ impl ToUnicodeNormalized for str {
 	fn to_nfd(&self) -> String {
 		to_normalized(self, Form::Nfd)
 	}
+
+	#[inline]
+	fn to_nfkc(&self) -> String {
+		to_normalized(self, Form::Nfkc)
+	}
+
+	#[inline]
+	fn to_nfkd(&self) -> String {
+		to_normalized(self, Form::Nfkd)
+	}
 }
 
 impl IntoUnicodeNormalized for String {
@@ -915,5 +1062,15 @@ impl IntoUnicodeNormalized for String {
 	#[inline]
 	fn into_nfd(self) -> String {
 		into_normalized(self, Form::Nfd)
+	}
+
+	#[inline]
+	fn into_nfkc(self) -> String {
+		into_normalized(self, Form::Nfkc)
+	}
+
+	#[inline]
+	fn into_nfkd(self) -> String {
+		into_normalized(self, Form::Nfkd)
 	}
 }
