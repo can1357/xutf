@@ -741,8 +741,8 @@ fn expand_decompositions(bytes: &mut Vec<u8>, required: usize, compat: bool) {
 		if ascii != 0 {
 			read -= ascii;
 			write -= ascii;
-			// SAFETY: the source is initialized, the destination is within reserved
-			// capacity, and `copy` permits the possible overlap.
+			// SAFETY: the source is initialized, the destination is within
+			// reserved capacity, and `copy` permits the possible overlap.
 			unsafe { ptr::copy(output.add(read), output.add(write), ascii) };
 			continue;
 		}
@@ -754,9 +754,9 @@ fn expand_decompositions(bytes: &mut Vec<u8>, required: usize, compat: bool) {
 		let decomposed_len = decomposed_utf8_len(cp, word, compat);
 		write -= decomposed_len;
 		if is_hangul_syllable(cp) || normalization_decomposition(word, compat).is_some() {
-			// SAFETY: `write..write + decomposed_len` lies in reserved capacity and
-			// cannot overlap unprocessed input because every remaining mapping is
-			// non-shrinking after `shrink_decompositions`.
+			// SAFETY: `write..write + decomposed_len` lies in reserved capacity
+			// and cannot overlap unprocessed input because every remaining
+			// mapping is non-shrinking after `shrink_decompositions`.
 			let written = unsafe { write_decomposition_ptr(cp, word, compat, output.add(write)) };
 			debug_assert_eq!(written, decomposed_len);
 		} else {

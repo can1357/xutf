@@ -235,7 +235,8 @@ unsafe fn block_to_utf16(
 	let cleared = _mm512_andnot_si512(non_ascii_tags, input);
 	let before_non_ascii = _mm512_maskz_mov_epi8(not_ascii >> 1, cleared);
 	if capped {
-		// SAFETY: validation proved a complete 32-codepoint one-or-two-byte prefix.
+		// SAFETY: validation proved a complete 32-codepoint one-or-two-byte
+		// prefix.
 		unsafe { block_capped_one_two_to_utf16(cleared, before_non_ascii, ends, dst) };
 		return Some((consumed, written));
 	}
@@ -705,10 +706,12 @@ unsafe fn decode_utf8_prefix<const UTF32: bool>(
 			break;
 		}
 		let block = if UTF32 {
-			// SAFETY: the loop bounds cover the fixed source and destination blocks.
+			// SAFETY: the loop bounds cover the fixed source and destination
+			// blocks.
 			unsafe { block_to_utf32(input, dst.add(written * 4).cast(), continuation, leads, three) }
 		} else {
-			// SAFETY: the loop bounds cover the fixed source and destination blocks.
+			// SAFETY: the loop bounds cover the fixed source and destination
+			// blocks.
 			unsafe { block_to_utf16(input, dst.add(written * 2).cast(), continuation, leads, three) }
 		};
 		let Some((used, output)) = block else {

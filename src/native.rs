@@ -569,8 +569,8 @@ fn utf8_blocks_to_utf16(src: &[u8], dst: &mut [u16], i: &mut usize, o: &mut usiz
 	let mut advanced = false;
 	#[cfg(target_arch = "x86_64")]
 	{
-		// SAFETY: the remaining slices provide the reported source and destination
-		// ranges.
+		// SAFETY: the remaining slices provide the reported source and
+		// destination ranges.
 		if let Some((consumed, written)) = unsafe {
 			crate::x86::utf8_mixed_prefix_to_utf16(
 				src.as_ptr().add(*i),
@@ -868,8 +868,8 @@ fn utf8_blocks_to_utf32(src: &[u8], dst: &mut [u32], i: &mut usize, o: &mut usiz
 	let mut advanced = false;
 	#[cfg(target_arch = "x86_64")]
 	{
-		// SAFETY: the remaining slices provide the reported source and destination
-		// ranges.
+		// SAFETY: the remaining slices provide the reported source and
+		// destination ranges.
 		if let Some((consumed, written)) = unsafe {
 			crate::x86::utf8_mixed_prefix_to_utf32(
 				src.as_ptr().add(*i),
@@ -1220,7 +1220,8 @@ fn utf16_to_utf8(src: &[u16], dst: &mut [u8]) -> (usize, usize) {
 	let accelerated: Option<(usize, usize)> = {
 		#[cfg(target_arch = "x86_64")]
 		{
-			// SAFETY: the slices provide the reported source and destination ranges.
+			// SAFETY: the slices provide the reported source and destination
+			// ranges.
 			unsafe {
 				crate::x86::utf16_to_utf8_prefix(src.as_ptr(), src.len(), dst.as_mut_ptr(), dst.len())
 			}
@@ -1489,7 +1490,8 @@ fn utf32_to_utf8(src: &[u32], dst: &mut [u8]) -> (usize, usize) {
 	let accelerated: Option<(usize, usize)> = {
 		#[cfg(target_arch = "x86_64")]
 		{
-			// SAFETY: the slices provide the reported source and destination ranges.
+			// SAFETY: the slices provide the reported source and destination
+			// ranges.
 			unsafe {
 				crate::x86::utf32_to_utf8_prefix(src.as_ptr(), src.len(), dst.as_mut_ptr(), dst.len())
 			}

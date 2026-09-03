@@ -57,8 +57,8 @@ impl WrappedLine<'_, Utf8> {
 	/// Returns this UTF-8 subline as a string.
 	#[inline(always)]
 	pub const fn as_str(&self) -> &str {
-		// SAFETY: line boundaries fall on cluster boundaries (char boundaries) in valid
-		// UTF-8.
+		// SAFETY: line boundaries fall on cluster boundaries (char boundaries) in
+		// valid UTF-8.
 		unsafe { core::str::from_utf8_unchecked(self.units) }
 	}
 }

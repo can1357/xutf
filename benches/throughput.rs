@@ -40,14 +40,16 @@ fn utf8_to_utf16_rows(inputs: &[(&'static str, String)]) -> Vec<(&'static str, V
 				Box::new(|| {
 					let mut dst = vec![0u16; len + 16];
 					measure(len, || {
-						// SAFETY: `src` is valid UTF-8 and `dst` has at least one u16 per input byte.
+						// SAFETY: `src` is valid UTF-8 and `dst` has at least one u16
+						// per input byte.
 						unsafe { simdutf::convert_utf8_to_utf16(src.as_ptr(), len, dst.as_mut_ptr()) }
 					})
 				}),
 				Box::new(|| {
 					let mut dst = vec![0u16; len + 16];
 					measure(len, || {
-						// SAFETY: `src` is valid UTF-8 and `dst` has at least one u16 per input byte.
+						// SAFETY: `src` is valid UTF-8 and `dst` has at least one u16
+						// per input byte.
 						unsafe {
 							simdutf::convert_valid_utf8_to_utf16(src.as_ptr(), len, dst.as_mut_ptr())
 						}
@@ -92,14 +94,16 @@ fn utf16_to_utf8_rows(inputs: &[(&'static str, String)]) -> Vec<(&'static str, V
 				Box::new(|| {
 					let mut dst = vec![0u8; len * 4 + 16];
 					measure(src_bytes, || {
-						// SAFETY: `src` is valid UTF-16 and `dst` reserves four bytes per code unit.
+						// SAFETY: `src` is valid UTF-16 and `dst` reserves four bytes
+						// per code unit.
 						unsafe { simdutf::convert_utf16_to_utf8(src.as_ptr(), len, dst.as_mut_ptr()) }
 					})
 				}),
 				Box::new(|| {
 					let mut dst = vec![0u8; len * 4 + 16];
 					measure(src_bytes, || {
-						// SAFETY: `src` is valid UTF-16 and `dst` reserves four bytes per code unit.
+						// SAFETY: `src` is valid UTF-16 and `dst` reserves four bytes
+						// per code unit.
 						unsafe {
 							simdutf::convert_valid_utf16_to_utf8(src.as_ptr(), len, dst.as_mut_ptr())
 						}
@@ -140,14 +144,16 @@ fn utf8_to_utf32_rows(inputs: &[(&'static str, String)]) -> Vec<(&'static str, V
 				Box::new(|| {
 					let mut dst = vec![0u32; len + 16];
 					measure(len, || {
-						// SAFETY: `src` is valid UTF-8 and `dst` has at least one u32 per input byte.
+						// SAFETY: `src` is valid UTF-8 and `dst` has at least one u32
+						// per input byte.
 						unsafe { simdutf::convert_utf8_to_utf32(src.as_ptr(), len, dst.as_mut_ptr()) }
 					})
 				}),
 				Box::new(|| {
 					let mut dst = vec![0u32; len + 16];
 					measure(len, || {
-						// SAFETY: `src` is valid UTF-8 and `dst` has at least one u32 per input byte.
+						// SAFETY: `src` is valid UTF-8 and `dst` has at least one u32
+						// per input byte.
 						unsafe {
 							simdutf::convert_valid_utf8_to_utf32(src.as_ptr(), len, dst.as_mut_ptr())
 						}
@@ -188,16 +194,16 @@ fn utf32_to_utf8_rows(inputs: &[(&'static str, String)]) -> Vec<(&'static str, V
 				Box::new(|| {
 					let mut dst = vec![0u8; len * 4 + 16];
 					measure(src_bytes, || {
-						// SAFETY: `src` contains Unicode scalar values and `dst` reserves four bytes
-						// per value.
+						// SAFETY: `src` contains Unicode scalar values and `dst`
+						// reserves four bytes per value.
 						unsafe { simdutf::convert_utf32_to_utf8(src.as_ptr(), len, dst.as_mut_ptr()) }
 					})
 				}),
 				Box::new(|| {
 					let mut dst = vec![0u8; len * 4 + 16];
 					measure(src_bytes, || {
-						// SAFETY: `src` contains Unicode scalar values and `dst` reserves four bytes
-						// per value.
+						// SAFETY: `src` contains Unicode scalar values and `dst`
+						// reserves four bytes per value.
 						unsafe {
 							simdutf::convert_valid_utf32_to_utf8(src.as_ptr(), len, dst.as_mut_ptr())
 						}
@@ -334,7 +340,8 @@ mod utf8_to_utf16 {
 		bencher
 			.counter(divan::counter::BytesCount::of_slice(src))
 			.bench_local(|| {
-				// SAFETY: `src` is valid UTF-8 and `dst` has at least one u16 per input byte.
+				// SAFETY: `src` is valid UTF-8 and `dst` has at least one u16 per
+				// input byte.
 				unsafe {
 					simdutf::convert_valid_utf8_to_utf16(src.as_ptr(), src.len(), dst.as_mut_ptr())
 				}
@@ -397,7 +404,8 @@ mod utf16_to_utf8 {
 		bencher
 			.counter(divan::counter::BytesCount::new(src_bytes))
 			.bench_local(|| {
-				// SAFETY: `src` is valid UTF-16 and `dst` reserves four bytes per code unit.
+				// SAFETY: `src` is valid UTF-16 and `dst` reserves four bytes per
+				// code unit.
 				unsafe {
 					simdutf::convert_valid_utf16_to_utf8(src.as_ptr(), src.len(), dst.as_mut_ptr())
 				}
@@ -459,7 +467,8 @@ mod utf8_to_utf32 {
 		bencher
 			.counter(divan::counter::BytesCount::of_slice(src))
 			.bench_local(|| {
-				// SAFETY: `src` is valid UTF-8 and `dst` has at least one u32 per input byte.
+				// SAFETY: `src` is valid UTF-8 and `dst` has at least one u32 per
+				// input byte.
 				unsafe {
 					simdutf::convert_valid_utf8_to_utf32(src.as_ptr(), src.len(), dst.as_mut_ptr())
 				}
@@ -511,8 +520,8 @@ mod utf32_to_utf8 {
 		bencher
 			.counter(divan::counter::BytesCount::new(src_bytes))
 			.bench_local(|| {
-				// SAFETY: `src` contains Unicode scalar values and `dst` reserves four bytes
-				// per value.
+				// SAFETY: `src` contains Unicode scalar values and `dst` reserves
+				// four bytes per value.
 				unsafe {
 					simdutf::convert_valid_utf32_to_utf8(src.as_ptr(), src.len(), dst.as_mut_ptr())
 				}

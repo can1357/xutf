@@ -794,7 +794,8 @@ pub unsafe fn utf16_fast_prefix(
 	if crate::x86::available() {
 		return (0, 0);
 	}
-	// SAFETY: callers supply the readable source and writable destination ranges.
+	// SAFETY: callers supply the readable source and writable destination
+	// ranges.
 	unsafe {
 		if len >= 64 {
 			let a = load_u16x8(src);
@@ -967,7 +968,8 @@ pub(crate) unsafe fn utf16_mixed_32_to_utf8(src: *const u16, dst: *mut u8) -> Op
 	if max <= 0x7f || (min > 0x7f && max <= 0x07ff) || min > 0x07ff {
 		return None;
 	}
-	// SAFETY: each helper writes at most 32 bytes inside the 96-byte scratch area.
+	// SAFETY: each helper writes at most 32 bytes inside the 96-byte scratch
+	// area.
 	unsafe {
 		let mut written = utf16_3_to_utf8(a, dst);
 		written += utf16_3_to_utf8(b, dst.add(written));
