@@ -100,8 +100,8 @@ pub use convert::{
 };
 pub use encoding::{Codepoints, Encoding, Kind, chars, codepoints};
 pub use grapheme::{
-	Grapheme, GraphemeIndices, Graphemes, StrGraphemeIndices, StrGraphemes, grapheme_indices,
-	grapheme_indices_str, graphemes, graphemes_str,
+	Cluster, Grapheme, GraphemeIndices, Graphemes, StrGraphemeIndices, StrGraphemes,
+	grapheme_indices, grapheme_indices_str, graphemes, graphemes_str,
 };
 pub use normalize::{
 	IntoUnicodeNormalized, MakeUnicodeNormalized, NormalizationError, ToUnicodeNormalized,

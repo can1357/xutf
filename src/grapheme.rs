@@ -351,6 +351,7 @@ pub const fn width_value(p: u8) -> usize {
 /// Incremental join state for one cluster, driving [`next_cluster`] and the
 /// flat scan inside [`crate::width`]: one decode and one table load per
 /// codepoint, no re-scanning at boundaries.
+#[derive(Clone, Copy, Debug)]
 pub struct ClusterState {
 	width:      usize,
 	prev:       u8,
@@ -471,6 +472,46 @@ impl ClusterState {
 		} else {
 			self.width
 		}
+	}
+}
+
+/// A grapheme cluster built one codepoint at a time, for text that arrives
+/// incrementally (a terminal's output stream) and cannot be re-scanned.
+///
+/// [`Cluster::push`] answers whether a codepoint joins the cluster, with the
+/// same UAX #29 decisions [`graphemes`] makes walking the text forward: one
+/// table load per codepoint, no buffering.
+///
+/// ```
+/// let mut cluster = xutf::Cluster::new('e');
+/// assert!(cluster.push('\u{301}'));
+/// assert!(!cluster.push('x'));
+/// assert_eq!(cluster.width(), 1);
+/// ```
+#[derive(Clone, Copy, Debug)]
+pub struct Cluster(ClusterState);
+
+impl Cluster {
+	/// A cluster starting with `c`.
+	#[inline]
+	#[must_use]
+	pub fn new(c: char) -> Self {
+		Self(ClusterState::start(c as u32, props(c as u32)))
+	}
+
+	/// Adds `c` when it continues the cluster and reports whether it did; a
+	/// `false` leaves the cluster unchanged, `c` starting the next one.
+	#[inline]
+	pub fn push(&mut self, c: char) -> bool {
+		self.0.try_join(c as u32, props(c as u32))
+	}
+
+	/// Terminal-cell width of the cluster so far, as [`graphemes`] reports
+	/// it for the same codepoints.
+	#[inline]
+	#[must_use]
+	pub fn width(&self) -> usize {
+		self.0.finish()
 	}
 }
 

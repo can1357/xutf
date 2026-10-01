@@ -1,7 +1,7 @@
 //! Behavioral and differential tests for extended grapheme clusters.
 
 use unicode_segmentation::UnicodeSegmentation;
-use xutf::{Encoding, Utf8, Utf16, Utf32, grapheme_indices_str, graphemes, graphemes_str};
+use xutf::{Cluster, Encoding, Utf8, Utf16, Utf32, grapheme_indices_str, graphemes, graphemes_str};
 
 const CORPUS: &[&str] = &[
 	"",
@@ -62,6 +62,42 @@ fn reverse_iteration_matches_forward_across_encodings() {
 		assert_reverse_matches_forward::<Utf32<false>>(&native32);
 		let foreign32: Vec<u32> = native32.iter().map(|u| u.swap_bytes()).collect();
 		assert_reverse_matches_forward::<Utf32<true>>(&foreign32);
+	}
+}
+
+/// The clusters and widths `Cluster` builds pushing `s` one codepoint at a
+/// time.
+fn incremental_clusters(s: &str) -> Vec<(String, usize)> {
+	let mut out: Vec<(String, usize)> = Vec::new();
+	let mut cluster: Option<Cluster> = None;
+	for c in s.chars() {
+		if let Some(open) = &mut cluster
+			&& open.push(c)
+		{
+			out.last_mut().expect("open").0.push(c);
+			continue;
+		}
+		if let Some(done) = cluster.take() {
+			out.last_mut().expect("open").1 = done.width();
+		}
+		cluster = Some(Cluster::new(c));
+		out.push((c.to_string(), 0));
+	}
+	if let Some(done) = cluster {
+		out.last_mut().expect("open").1 = done.width();
+	}
+	out
+}
+
+#[test]
+fn incremental_clusters_match_forward_iteration() {
+	let mut corpus: Vec<String> = CORPUS.iter().map(|s| (*s).to_owned()).collect();
+	corpus.push(CORPUS.concat());
+	for s in &corpus {
+		let forward: Vec<(String, usize)> = graphemes::<Utf8>(s.as_bytes())
+			.map(|g| (String::from_utf8_lossy(g.units).into_owned(), g.width))
+			.collect();
+		assert_eq!(incremental_clusters(s), forward, "incremental segmentation differed for {s:?}");
 	}
 }
 

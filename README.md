@@ -324,6 +324,10 @@ let indexed = line.grapheme_indices().count();     // typed, double-ended iterat
 assert_eq!(indexed, line.graphemes().len());
 let rows = line.wrap_measured(10).count();         // offsets and widths included
 
+// Streams that arrive a codepoint at a time segment incrementally.
+let mut cluster = xutf::Cluster::new('e');
+assert!(cluster.push('\u{301}') && !cluster.push('x'));
+
 // Owned strings keep their allocation; borrowed strings allocate once.
 let clean = String::from("\x1b[31mred\x1b[0m").into_ansi_stripped();
 assert_eq!(clean, "red");
