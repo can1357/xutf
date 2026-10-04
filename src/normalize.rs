@@ -651,7 +651,8 @@ fn scan(input: &str, form: Form) -> Scan {
 						NFKC_MAYBE_BIT
 					} else {
 						NFC_MAYBE_BIT
-					} != 0;
+					}
+					!= 0;
 				let order_bit = if compat {
 					NFKD_DECOMPOSITION_ORDER_BIT
 				} else {
