@@ -122,7 +122,10 @@ pub use unit::Unit;
 pub use utf8::Utf8;
 pub use utf16::Utf16;
 pub use utf32::Utf32;
-pub use width::{width, width_char, width_str, width_within, width_within_str};
+pub use width::{
+	is_emoji_presentation_base, simple_width, width, width_char, width_str, width_within,
+	width_within_str,
+};
 pub use wrap::{
 	StrWrapped, Wrapped, WrappedLine, WrappedMeasured, wrap, wrap_measured, wrap_measured_str,
 	wrap_str,

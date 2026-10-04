@@ -56,7 +56,8 @@ pub fn truncate_measured<E: Encoding>(input: &[E::Unit], max_width: usize) -> (&
 					};
 				}
 				// Data follows, so hold one unit back: the run's last char may
-				// open a promotable or extending cluster, such as a keycap.
+				// open a cluster the next codepoint joins and widens (U+FE0F
+				// after a digit).
 				// Since the scan is bounded to budget + 1, this is affordable
 				// without a second min or cutoff branch.
 				let safe = run - 1;
@@ -139,7 +140,8 @@ pub fn skip_columns<E: Encoding>(input: &[E::Unit], columns: usize) -> (&[E::Uni
 			let run = plain_prefix(&remaining[..window]);
 			if run > 0 {
 				// Hold one unit back when data follows: the run's last char may
-				// open a promotable or extending cluster, such as a keycap.
+				// open a cluster the next codepoint joins and widens (U+FE0F
+				// after a digit).
 				let safe = if pos + run < input.len() {
 					run - 1
 				} else {

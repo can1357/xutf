@@ -29,7 +29,7 @@ roughly 1.5–2× ahead on typical text, and **3–10×** ahead on emoji-heavy i
 - **Cross-encoding comparison** — equality, ordering, and ASCII case-folding
   between different encodings, no conversion needed.
 - **Terminal text on UTF-8, UTF-16, or UTF-32** — UAX #29 grapheme clusters,
-  UAX #11 width, cluster-safe truncate and word wrap, plus SIMD ANSI/VT
+  kitty's cell widths, cluster-safe truncate and word wrap, plus SIMD ANSI/VT
   stripping that reuses owned buffers and compacts mutable slices in place.
 - **Scalar property lookups** — NFC/NFD/NFKC/NFKD normalization with a SIMD
   quick-check, plus `General_Category` (fine categories and the
@@ -45,8 +45,8 @@ roughly 1.5–2× ahead on typical text, and **3–10×** ahead on emoji-heavy i
 - **`#![no_std]`**, zero runtime dependencies, Unicode 17.0 tables generated
   from the UCD.
 - **Differentially tested** — fuzzed against `unicode-segmentation`,
-  exhaustive per-scalar parity with `unicode-width`, `unicode-properties`
-  and `unicode-script`.
+  exhaustive per-scalar parity with `unicode-properties` and
+  `unicode-script`.
 
 ## Benchmarks
 
@@ -377,10 +377,17 @@ assert!(xutf::is_nfc("café"));
 assert_eq!("cafe\u{0301}".to_nfc(), "café");
 ```
 
-Per-character widths match `unicode-width` 0.2.2 exactly (sole exception
-U+17D8); string widths are cluster-exact — `s.visible_width()` always equals
-the sum of `s.graphemes()` item widths. Deliberate divergences from the
-`unicode-width` string automaton are listed in `src/width.rs`.
+Widths follow kitty's algorithm for splitting text into cells (its text sizing
+protocol). A cluster takes the cells of its first character; later characters
+add none, except that U+FE0F widens a one-cell emoji presentation base, U+FE0E
+narrows a two-cell one, and Thai/Lao AM widen a one-cell base. Per character:
+regional indicators, East Asian Wide/Fullwidth and emoji presentation are two
+cells; marks (`Mn`, `Mc`, `Me`), format characters, other default-ignorables,
+controls, surrogates and noncharacters zero; everything else one. String
+widths are cluster-exact — `s.visible_width()` always equals the sum of
+`s.graphemes()` item widths — and equal kitty's `wcswidth` wherever its
+segmentation follows UAX #29 (it pairs regional indicators after a control or
+prepend character one later).
 
 ## Fuzzing
 

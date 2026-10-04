@@ -255,12 +255,12 @@ fn cluster_width_follows_terminal_semantics() {
 		("界", 2),
 		("👨‍👩‍👧", 2),
 		("🇺🇸", 2),
-		("🇺", 1),
+		("🇺", 2),
 		("e\u{301}", 1),
 		("\u{1100}\u{1161}\u{11a8}", 2),
 		("가", 2),
-		("\u{915}\u{94d}\u{937}", 2),
-		("\u{3164}", 0),
+		("\u{915}\u{94d}\u{937}", 1),
+		("\u{3164}", 2),
 		("\u{3131}", 2),
 		("\t", 0),
 		("\r\n", 0),
@@ -280,7 +280,7 @@ fn malformed_and_empty_inputs_are_permissive() {
 	let surrogate = [0xd800u16];
 	let cluster = graphemes::<Utf16<false>>(&surrogate).next().unwrap();
 	assert_eq!(cluster.units, &surrogate);
-	assert_eq!(cluster.width, 1);
+	assert_eq!(cluster.width, 0);
 
 	let truncated = [0xe4u8, 0xb8];
 	let clusters: Vec<_> = graphemes::<Utf8>(&truncated).collect();

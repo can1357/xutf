@@ -6,8 +6,7 @@ properties into one byte, and emits a deduplicated two-level trie.
 
 Packed byte layout (must match src/grapheme.rs):
   bits 0..=3  grapheme cluster break class (CB_*)
-  bits 4..=5  cell width class (0, 1, 2; 3 = width 1, promotes to 2 when the
-              cluster carries U+FE0F VS16 or U+20E3 COMBINING ENCLOSING KEYCAP)
+  bits 4..=5  standalone cell width per kitty's rules (0, 1 or 2)
   bit  6      Extended_Pictographic (UAX #29 GB11)
   bit  7      InCB=Extend (UAX #29 GB9c)
 
@@ -21,16 +20,17 @@ import subprocess
 import sys
 import urllib.request
 
-UCD = "https://www.unicode.org/Public/UCD/latest/ucd/"
-# Paths within a UCD release root. `None` as a version means "latest".
+UCD = "https://www.unicode.org/Public/UCD/latest/"
+# Paths within a Unicode release root. `None` as a version means "latest".
 FILES = {
-    "UnicodeData.txt": "UnicodeData.txt",
-    "EastAsianWidth.txt": "EastAsianWidth.txt",
-    "GraphemeBreakProperty.txt": "auxiliary/GraphemeBreakProperty.txt",
-    "DerivedCoreProperties.txt": "DerivedCoreProperties.txt",
-    "emoji-data.txt": "emoji/emoji-data.txt",
-    "PropList.txt": "PropList.txt",
-    "Scripts.txt": "Scripts.txt",
+    "UnicodeData.txt": "ucd/UnicodeData.txt",
+    "EastAsianWidth.txt": "ucd/EastAsianWidth.txt",
+    "GraphemeBreakProperty.txt": "ucd/auxiliary/GraphemeBreakProperty.txt",
+    "DerivedCoreProperties.txt": "ucd/DerivedCoreProperties.txt",
+    "emoji-data.txt": "ucd/emoji/emoji-data.txt",
+    "emoji-sequences.txt": "emoji/emoji-sequences.txt",
+    "PropList.txt": "ucd/PropList.txt",
+    "Scripts.txt": "ucd/Scripts.txt",
 }
 
 # `General_Category`/`Script` tables are additionally emitted for this older
@@ -101,7 +101,7 @@ def fetch(name: str, version: str | None = None) -> list[str]:
     `version` is a release like `"16.0.0"`; `None` reads the `latest` tree,
     whose cache lives directly in `scripts/ucd/`.
     """
-    base = UCD if version is None else f"https://www.unicode.org/Public/{version}/ucd/"
+    base = UCD if version is None else f"https://www.unicode.org/Public/{version}/"
     cache = CACHE if version is None else os.path.join(CACHE, version)
     os.makedirs(cache, exist_ok=True)
     path = os.path.join(cache, name)
@@ -185,6 +185,42 @@ def load_set(name: str, prop: str, prop_field: int = 1) -> set[int]:
     return out
 
 
+def load_emoji_sequences() -> tuple[set[int], set[int]]:
+    """Wide emoji and emoji presentation bases from emoji-sequences.txt.
+
+    Wide: `Basic_Emoji` without a `FE0F` in its entry (emoji presentation by
+    default), every code point of an `RGI_Emoji_Flag_Sequence` and the
+    leading code point of every `RGI_Emoji_Tag_Sequence` and
+    `RGI_Emoji_Modifier_Sequence`. Presentation bases: all of those plus the
+    `Basic_Emoji` that need `FE0F` and the keycap bases, i.e. every code point
+    a variation selector can switch between text and emoji presentation.
+    """
+    wide, bases = set(), set()
+    for line in fetch("emoji-sequences.txt"):
+        body = line.split("#", 1)[0].strip()
+        if not body:
+            continue
+        seq, kind = (f.strip() for f in body.split(";")[:2])
+        parts = seq.split()
+        if ".." in parts[0]:
+            lo, hi = (int(x, 16) for x in parts[0].split(".."))
+            first = set(range(lo, hi + 1))
+        else:
+            first = {int(parts[0], 16)}
+        if kind == "Basic_Emoji":
+            if len(parts) == 1:
+                wide |= first
+        elif kind == "RGI_Emoji_Flag_Sequence":
+            first = {int(p, 16) for p in parts}
+            wide |= first
+        elif kind in ("RGI_Emoji_Tag_Sequence", "RGI_Emoji_Modifier_Sequence"):
+            wide |= first
+        elif kind != "Emoji_Keycap_Sequence":
+            continue
+        bases |= first
+    return wide, bases
+
+
 def load_incb() -> dict[int, str]:
     """InCB from DerivedCoreProperties: `cp ; InCB; Extend|Linker|Consonant`."""
     out = {}
@@ -211,26 +247,9 @@ def build_props() -> tuple[list[int], tuple[int, int, int]]:
     eaw = load_ranged("EastAsianWidth.txt", default="N")
     gcb = load_ranged("GraphemeBreakProperty.txt", default="Other")
     incb = load_incb()
-    default_ignorable = load_set(
-        "DerivedCoreProperties.txt", "Default_Ignorable_Code_Point"
-    )
-    grapheme_extend = load_set("DerivedCoreProperties.txt", "Grapheme_Extend")
-    prepended_concat = load_set("PropList.txt", "Prepended_Concatenation_Mark")
-    emoji = load_set("emoji-data.txt", "Emoji")
+    other_ignorable = load_set("PropList.txt", "Other_Default_Ignorable_Code_Point")
     epic = load_set("emoji-data.txt", "Extended_Pictographic")
-
-    # Zero-width prepended concatenation marks (Arabic and Syriac; see the
-    # Unicode core spec ch. 9) and DEVANAGARI CARET.
-    special_zero = {0x0605, 0x070F, 0x0890, 0x0891, 0x08E2, 0xA8FA}
-    # U+115F HANGUL CHOSEONG FILLER carries the syllable's width (2);
-    # U+2D7F TIFINAGH CONSONANT JOINER is visible in isolation; the Kirat
-    # Rai vowel signs are Grapheme_Extend but render standalone at 1 cell
-    # (all per unicode-width).
-    never_zero = {0x115F, 0x2D7F, 0x16D63, 0x16D67, 0x16D68, 0x16D69, 0x16D6A}
-    # U+17A4 KHMER INDEPENDENT VOWEL QAA renders 2 cells despite EAW N
-    # (unicode-width override). U+17D8 KHMER SIGN BEYYAL is 3 cells there;
-    # our 2-bit width class keeps it at 1 like wcwidth.
-    force_wide = {0x17A4}
+    wide_emoji, _ = load_emoji_sequences()
 
     props = [0] * NUM_CP
     for cp in range(NUM_CP):
@@ -247,29 +266,26 @@ def build_props() -> tuple[list[int], tuple[int, int, int]]:
             assert g == "Other", f"InCB Consonant U+{cp:04X} has GCB {g}"
             cls = CB["OtherInCbConsonant"]
 
-        # --- cell width class ---------------------------------------------
-        # Mirrors unicode-width's `load_zero_widths`: zero for
-        # Default_Ignorable_Code_Point, Grapheme_Extend (which pulls in the
-        # canonically-combining Mc oddballs), Hangul jungseong/jongseong
-        # (GCB V/T ≡ Hangul_Syllable_Type V/T), zero-width prepended
-        # concatenation marks, and GCB Prepend letters that are not
-        # concatenation marks (Indic consonant prefixes). Controls are 0
-        # (unicode-width reports None). 2 for East Asian Wide/Fullwidth.
-        # Class 3 marks default-text-presentation emoji: width 1, promoted
-        # to 2 by VS16/keycap at the cluster level.
-        zero = (
-            cp in default_ignorable
-            or cp in grapheme_extend
-            or g in ("V", "T")
-            or cp in special_zero
-            or (g == "Prepend" and cp not in prepended_concat)
-        ) and cp not in never_zero
-        if cat == "Cc" or zero:
-            width = 0
-        elif eaw[cp] in ("W", "F") or cp in force_wide:
+        # --- cell width ---------------------------------------------------
+        # kitty's rules ("The algorithm for splitting text into cells" in its
+        # text sizing protocol), first match wins:
+        #   2  regional indicators, East Asian Wide/Fullwidth (the `@missing`
+        #      defaults make unassigned CJK ideographs wide) and wide emoji;
+        #   0  marks (M*), format characters (Cf),
+        #      Other_Default_Ignorable_Code_Point, and the code points kitty
+        #      rejects as invalid: controls (Cc), surrogates (Cs) and
+        #      noncharacters;
+        #   1  everything else, ambiguous, private use and unassigned alike.
+        if g == "Regional_Indicator" or eaw[cp] in ("W", "F") or cp in wide_emoji:
             width = 2
-        elif cp in emoji and g != "Regional_Indicator":
-            width = 3  # text presentation by default; VS16/keycap promotes
+        elif (
+            cat[0] == "M"
+            or cat in ("Cf", "Cc", "Cs")
+            or cp in other_ignorable
+            or (cp & 0xFFFE) == 0xFFFE
+            or 0xFDD0 <= cp <= 0xFDEF
+        ):
+            width = 0
         else:
             width = 1
 
@@ -319,7 +335,7 @@ def to_ranges(cps: set[int]) -> list[tuple[int, int]]:
 
 def emit(props: list[int], version) -> str:
     size, shift, stage1, blocks, wide = best_trie(props[BMP_END:])
-    emb = to_ranges(load_set("emoji-data.txt", "Emoji_Modifier_Base"))
+    epb = to_ranges(load_emoji_sequences()[1])
     leaves = bytearray()
     for key in blocks:
         leaves.extend(key)
@@ -360,9 +376,6 @@ def emit(props: list[int], version) -> str:
     w("")
     w("pub const CB_MASK: u8 = 0x0f;")
     w(f"pub const WIDTH_SHIFT: u8 = {WIDTH_SHIFT};")
-    w("/// Width class 3: default text presentation emoji — 1 cell, promoted")
-    w("/// to 2 by VS16 (U+FE0F) or COMBINING ENCLOSING KEYCAP (U+20E3).")
-    w("pub const WIDTH_EMOJI_TEXT: u8 = 3;")
     w(f"pub const EPIC_BIT: u8 = 0x{EPIC_BIT:02x};")
     w(f"pub const INCB_EXTEND_BIT: u8 = 0x{INCB_EXTEND_BIT:02x};")
     w("")
@@ -391,14 +404,15 @@ def emit(props: list[int], version) -> str:
     w(f"    LEAVES[block * {1 << shift} + (astral & 0x{(1 << shift) - 1:x})]")
     w("}")
     w("")
-    w("/// `true` when `cp` accepts an emoji skin-tone modifier")
-    w("/// (`Emoji_Modifier_Base`).")
+    w("/// `true` when a variation selector switches `cp` between text and")
+    w("/// emoji presentation: the code points of `Basic_Emoji`, keycap, flag,")
+    w("/// tag and modifier sequences in emoji-sequences.txt.")
     w("#[inline]")
-    w("pub fn is_emoji_modifier_base(cp: u32) -> bool {")
-    w(f"    if !(0x{emb[0][0]:x}..=0x{emb[-1][1]:x}).contains(&cp) {{")
+    w("pub fn is_emoji_presentation_base(cp: u32) -> bool {")
+    w(f"    if !(0x{epb[0][0]:x}..=0x{epb[-1][1]:x}).contains(&cp) {{")
     w("        return false;")
     w("    }")
-    w("    EMOJI_MODIFIER_BASE")
+    w("    EMOJI_PRESENTATION_BASE")
     w("        .binary_search_by(|&(lo, hi)| {")
     w("            if cp < lo {")
     w("                core::cmp::Ordering::Greater")
@@ -411,10 +425,10 @@ def emit(props: list[int], version) -> str:
     w("        .is_ok()")
     w("}")
     w("")
-    w("/// Sorted `Emoji_Modifier_Base` ranges (inclusive).")
-    w(f"static EMOJI_MODIFIER_BASE: [(u32, u32); {len(emb)}] = [")
-    for i in range(0, len(emb), 6):
-        row = ", ".join(f"(0x{lo:x}, 0x{hi:x})" for lo, hi in emb[i : i + 6])
+    w("/// Sorted emoji presentation base ranges (inclusive).")
+    w(f"static EMOJI_PRESENTATION_BASE: [(u32, u32); {len(epb)}] = [")
+    for i in range(0, len(epb), 6):
+        row = ", ".join(f"(0x{lo:x}, 0x{hi:x})" for lo, hi in epb[i : i + 6])
         w(f"    {row},")
     w("];")
     w("")

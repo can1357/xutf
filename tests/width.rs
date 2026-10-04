@@ -1,5 +1,7 @@
-use unicode_width::UnicodeWidthStr;
-use xutf::{Utf8, Utf16, Utf32, width, width_char, width_str, width_within, width_within_str};
+use xutf::{
+	Cluster, Utf8, Utf16, Utf32, simple_width, width, width_char, width_str, width_within,
+	width_within_str,
+};
 
 const CORPUS: &[&str] = &[
 	"plain printable ASCII 0123456789 !@#$%^&*()",
@@ -19,51 +21,115 @@ const CORPUS: &[&str] = &[
 	"🏴\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}",
 ];
 
-fn reference(s: &str) -> usize {
-	UnicodeWidthStr::width(s)
+/// kitty's cluster widths: the first codepoint's cells, with only the
+/// variation selectors and Thai/Lao AM changing them.
+#[test]
+fn cluster_takes_its_first_codepoints_width() {
+	for (s, expected, what) in [
+		("e\u{301}", 1, "combining mark"),
+		("\u{915}\u{93e}", 1, "spacing combining mark adds nothing"),
+		("\u{915}\u{94d}\u{937}\u{93f}", 1, "Indic conjunct"),
+		("\u{1100}\u{1161}\u{11a8}", 2, "conjoining Hangul syllable"),
+		("\u{1161}", 1, "lone jungseong"),
+		("a\u{302a}", 1, "wide mark after a narrow base"),
+		("\u{1f1fa}\u{1f1f8}", 2, "flag"),
+		("\u{1f1fa}", 2, "lone regional indicator"),
+		("\u{1f1fa}\u{1f1f8}\u{1f1e9}", 4, "flag and a lone indicator"),
+		("\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}", 2, "ZWJ sequence"),
+		("\u{1f44d}\u{1f3fd}", 2, "modifier after its base"),
+		("0\u{1f3fd}", 1, "modifier after a non-base"),
+		("\u{261d}", 2, "text-default modifier base is wide"),
+		("\u{600}1", 0, "prepended concatenation mark takes the digit's cell"),
+		("\u{301}", 0, "lone mark"),
+	] {
+		assert_eq!(width_str(s), expected, "{what}: {s:?}");
+	}
 }
 
+/// U+FE0F widens a one-cell emoji presentation base right before it, U+FE0E
+/// narrows a two-cell one; neither touches anything else.
 #[test]
-fn safe_corpus_matches_unicode_width() {
-	for &s in CORPUS {
-		assert_eq!(width_str(s), reference(s), "{s:?}");
-	}
-
-	let mut state = 0x8e5d_a2c7_13b9_4f61u64;
-	for _ in 0..500 {
-		state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
-		let count = 2 + (state as usize % 7);
-		let mut s = String::new();
-		for _ in 0..count {
-			state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
-			s.push_str(CORPUS[state as usize % CORPUS.len()]);
-			s.push(' ');
-		}
-		assert_eq!(width_str(&s), reference(&s), "{s:?}");
+fn variation_selectors_resize_presentation_bases() {
+	for (s, expected, what) in [
+		("\u{2764}\u{fe0f}", 2, "VS16 widens a text-default emoji"),
+		("\u{2764}", 1, "text-default emoji"),
+		("#\u{fe0f}\u{20e3}", 2, "keycap"),
+		("#\u{20e3}", 1, "bare keycap"),
+		("x\u{fe0f}", 1, "VS16 after a non-base"),
+		("\u{2764}\u{301}\u{fe0f}", 1, "VS16 not right after the base"),
+		("\u{1f600}\u{fe0f}", 2, "VS16 on a wide emoji"),
+		("\u{1f600}\u{fe0e}", 1, "VS15 narrows a wide emoji"),
+		("\u{261d}\u{fe0e}", 1, "VS15 narrows a wide modifier base"),
+		("\u{1f600}\u{fe0e}\u{fe0f}", 1, "VS16 after VS15"),
+		("\u{4e2d}\u{fe0e}", 2, "VS15 on a wide non-emoji"),
+		("\u{2764}\u{fe0e}", 1, "VS15 on a narrow base"),
+	] {
+		assert_eq!(width_str(s), expected, "{what}: {s:?}");
 	}
 }
 
+/// Simple characters take their standalone width and never join each other,
+/// whatever their break class; everything that can join, pair or take no
+/// cell is not simple.
 #[test]
-fn deterministic_safe_scalar_fuzz_matches_unicode_width() {
-	const SAFE: &[char] = &[
-		' ', '!', '0', 'A', 'z', 'é', 'Ω', 'Ж', '\u{301}', '\u{308}', 'क', 'म', '\u{93f}', '\u{94d}',
-		'த', '\u{bbf}', 'ก', '\u{e34}', '界', '語', 'あ', 'カ', 'ｶ', '한', 'ᄀ', 'ᅡ', 'ᆨ', 'ㄱ',
-		'\u{3164}', '─', '│', '╳', '😀', '✅', '🚀', '👋', '🏽', '🇺', '🇸',
+fn simple_characters_break_pairwise() {
+	let simple = [
+		'a',
+		'9',
+		'#',
+		'\u{e9}',
+		'\u{4e2d}',
+		'\u{ac00}',
+		'\u{ac01}',
+		'\u{915}',
+		'\u{1f600}',
+		'\u{2764}',
+		'\u{261d}',
+		'\u{e000}',
+		'\u{378}',
 	];
-	let mut state = 0xd1b5_4a32_d192_ed03u64;
-	for _ in 0..2_000 {
-		state = state
-			.wrapping_mul(2862933555777941757)
-			.wrapping_add(3037000493);
-		let len = state as usize % 40;
-		let mut s = String::new();
-		for _ in 0..len {
-			state = state
-				.wrapping_mul(2862933555777941757)
-				.wrapping_add(3037000493);
-			s.push(SAFE[state as usize % SAFE.len()]);
+	for a in simple {
+		assert_eq!(simple_width(a), width_char(a), "{a:?}");
+		assert_ne!(simple_width(a), 0, "{a:?}");
+		for b in simple {
+			assert!(!Cluster::new(a).push(b), "{a:?} {b:?}");
 		}
-		assert_eq!(width_str(&s), reference(&s), "{s:?}");
+	}
+	for c in [
+		'\u{301}',
+		'\u{93e}',
+		'\u{94d}',
+		'\u{200d}',
+		'\u{fe0f}',
+		'\u{1f1e6}',
+		'\u{1100}',
+		'\u{1161}',
+		'\u{11a8}',
+		'\u{600}',
+		'\u{d4e}',
+		'\u{ad}',
+		'\t',
+		'\u{85}',
+		'\u{fdd0}',
+		'\u{1f3fb}',
+	] {
+		assert_eq!(simple_width(c), 0, "{c:?}");
+	}
+}
+
+/// Thai and Lao AM, the spacing marks with a width of their own, widen a
+/// one-cell base, through marks between them, and nothing wider.
+#[test]
+fn sara_am_widens_a_narrow_base() {
+	for (s, expected) in [
+		("\u{e01}\u{e33}", 2),
+		("\u{e81}\u{eb3}", 2),
+		("\u{e01}\u{e48}\u{e33}", 2),
+		("\u{e33}", 1),
+		("\u{4e2d}\u{e33}", 2),
+		("\u{e01}\u{e33}\u{e33}", 2),
+	] {
+		assert_eq!(width_str(s), expected, "{s:?}");
 	}
 }
 
@@ -97,6 +163,12 @@ fn simd_boundaries_and_cluster_backoff() {
 		let text_base = "x".repeat(k) + "\u{fe0f}\u{20e3}";
 		assert_eq!(width_str(&text_base), k, "non-keycap base after {k} units");
 
+		let bare_keycap = "0".repeat(k) + "\u{20e3}";
+		assert_eq!(width_str(&bare_keycap), k, "bare keycap after {k} units");
+
+		let sara_am = "x".repeat(k) + "\u{301}\u{e33}";
+		assert_eq!(width_str(&sara_am), k + 1, "SARA AM after a mark after {k} units");
+
 		let tab = "x".repeat(k) + "\t";
 		let bell = "x".repeat(k) + "\x07";
 		assert_eq!(width_str(&tab), k);
@@ -113,7 +185,7 @@ fn tui_reference_widths() {
 		("0️⃣", 2),
 		("a\tb", 2),
 		("界", 2),
-		("\u{3164}", 0),
+		("\u{3164}", 2),
 		("e\u{301}", 1),
 		("🇺🇸", 2),
 		("👨‍👩‍👧", 2),

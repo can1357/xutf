@@ -10,7 +10,7 @@ use crate::{
 	props::{
 		CB_CONTROL, CB_CR, CB_EXTEND, CB_EXTEND_INCB_LINKER, CB_L, CB_LF, CB_LV, CB_LVT, CB_MASK,
 		CB_OTHER_INCB_CONSONANT, CB_PREPEND, CB_RI, CB_SPACING_MARK, CB_T, CB_V, CB_ZWJ, EPIC_BIT,
-		INCB_EXTEND_BIT, WIDTH_EMOJI_TEXT, WIDTH_SHIFT, is_emoji_modifier_base, props,
+		INCB_EXTEND_BIT, WIDTH_SHIFT, is_emoji_presentation_base, props,
 	},
 	simd::plain_prefix,
 	unit::Unit,
@@ -337,31 +337,32 @@ pub struct ClusterScan {
 	pub width: usize,
 }
 
-/// Standalone cell width encoded in a props byte (class 3 reads as 1).
+/// Standalone cell width encoded in a props byte.
 #[inline(always)]
 pub const fn width_value(p: u8) -> usize {
-	let width = (p >> WIDTH_SHIFT) & 3;
-	if width == WIDTH_EMOJI_TEXT {
-		1
-	} else {
-		width as usize
-	}
+	((p >> WIDTH_SHIFT) & 3) as usize
 }
 
 /// Incremental join state for one cluster, driving [`next_cluster`] and the
 /// flat scan inside [`crate::width`]: one decode and one table load per
 /// codepoint, no re-scanning at boundaries.
+///
+/// The width follows kitty: a cluster takes the cells of its first codepoint;
+/// a joining codepoint adds none, except that U+FE0F widens a one-cell emoji
+/// presentation base, U+FE0E narrows a two-cell one, and a spacing mark with
+/// a width of its own (Thai and Lao AM) widens a one-cell base.
 #[derive(Clone, Copy, Debug)]
 pub struct ClusterState {
 	width:      usize,
+	/// Cells the last codepoint left the cluster at, kitty's `prev_width`:
+	/// the base's width, as changed by the variation selectors and spacing
+	/// marks after it; zero after a variation selector that changed nothing.
+	last_width: usize,
 	prev:       u8,
 	prev_cp:    u32,
 	epic:       u8,
 	incb:       u8,
 	ri_odd:     bool,
-	after_zwj:  bool,
-	promotable: bool,
-	promote:    bool,
 }
 
 impl ClusterState {
@@ -371,14 +372,12 @@ impl ClusterState {
 		let c0 = p0 & CB_MASK;
 		Self {
 			width:      width_value(p0),
+			last_width: width_value(p0),
 			prev:       c0,
 			prev_cp:    cp0,
 			epic:       u8::from(p0 & EPIC_BIT != 0),
 			incb:       u8::from(c0 == CB_OTHER_INCB_CONSONANT),
 			ri_odd:     c0 == CB_RI,
-			after_zwj:  false,
-			promotable: (p0 >> WIDTH_SHIFT) & 3 == WIDTH_EMOJI_TEXT,
-			promote:    false,
 		}
 	}
 
@@ -441,37 +440,41 @@ impl ClusterState {
 
 		self.ri_odd = c == CB_RI && !self.ri_odd;
 
-		if cp == 0xfe0f || cp == 0x20e3 {
-			self.promote = true;
-		}
-		if c == CB_ZWJ {
-			self.after_zwj = true;
-		} else if !self.after_zwj {
-			// Extend-class marks are zero-width, except a few that carry
-			// intrinsic width (emoji skin-tone modifiers, Kirat Rai vowels).
-			// A modifier renders into an immediately preceding
-			// Emoji_Modifier_Base ("\u{1F44D}\u{1F3FD}" is 2 cells) and
-			// stands alone otherwise ("0\u{1F3FD}" is 3).
-			let modifier = (c == CB_EXTEND || c == CB_EXTEND_INCB_LINKER)
-				&& width_value(p) == 2
-				&& is_emoji_modifier_base(self.prev_cp);
-			if !modifier {
-				self.width += width_value(p);
-			}
+		// `last_width` is either `width` or zero, so narrowing never
+		// underflows and widening never takes a cluster past two cells.
+		match cp {
+			0xfe0f => {
+				if self.last_width == 1 && is_emoji_presentation_base(self.prev_cp) {
+					self.width += 1;
+					self.last_width = 2;
+				} else {
+					self.last_width = 0;
+				}
+			},
+			0xfe0e => {
+				if self.last_width == 2 && is_emoji_presentation_base(self.prev_cp) {
+					self.width -= 1;
+					self.last_width = 1;
+				} else {
+					self.last_width = 0;
+				}
+			},
+			_ => {
+				if c == CB_SPACING_MARK && width_value(p) != 0 && self.last_width == 1 {
+					self.width += 1;
+					self.last_width = 2;
+				}
+			},
 		}
 		self.prev_cp = cp;
 		self.prev = c;
 		true
 	}
 
-	/// Cluster width with any pending VS16/keycap promotion applied.
+	/// Cells the cluster takes.
 	#[inline(always)]
-	pub fn finish(&self) -> usize {
-		if self.promote && self.promotable {
-			self.width.max(2)
-		} else {
-			self.width
-		}
+	pub const fn finish(&self) -> usize {
+		self.width
 	}
 }
 
@@ -510,7 +513,7 @@ impl Cluster {
 	/// it for the same codepoints.
 	#[inline]
 	#[must_use]
-	pub fn width(&self) -> usize {
+	pub const fn width(&self) -> usize {
 		self.0.finish()
 	}
 }
@@ -645,7 +648,7 @@ pub fn cluster_count<E: Encoding>(input: &[E::Unit]) -> usize {
 				return count + run;
 			}
 			// All but the run's last unit are whole clusters; the last may
-			// open a promotable or extending cluster, such as a keycap.
+			// open a cluster that the next codepoint joins, such as a keycap.
 			if run > 1 {
 				count += run - 1;
 				rest = &rest[run - 1..];

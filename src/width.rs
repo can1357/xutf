@@ -1,48 +1,40 @@
 //! Visible terminal width without ANSI interpretation or allocation.
 //!
-//! Width is measured per extended grapheme cluster using UAX #11 table widths
-//! and emoji-presentation rules. Combining marks, variation selectors, skin
-//! tones, and content following a ZWJ contribute no extra cells; other joined
-//! characters retain their table width. VS16 and keycap sequences promote a
-//! promotable text base to two cells. A SIMD path counts printable ASCII in
+//! Widths follow kitty's algorithm for splitting text into cells (the "text
+//! sizing protocol" specification): text splits into extended grapheme
+//! clusters (UAX #29), and a cluster takes the cells of its first codepoint
+//! ([`width_char`]). Later codepoints add none, except that U+FE0F widens a
+//! one-cell emoji presentation base ([`is_emoji_presentation_base`]), U+FE0E
+//! narrows a two-cell one, and Thai and Lao AM (spacing marks with a width of
+//! their own) widen a one-cell base. A SIMD path counts printable ASCII in
 //! bulk. Controls, including `\t`, have width zero; callers should expand tabs
 //! before measuring when tab stops matter.
 //! Bounded measurement can stop as soon as a limit is exceeded, while
 //! per-character measurement reports the standalone width of one scalar.
-//!
-//! Compared with `unicode-width` string width, deliberate differences include
-//! CR/LF, Arabic Lam-Alef and Hebrew Lamed ligatures, Khmer coeng sequences,
-//! Buginese ya-ZWJ, Tifinagh consonant joins, Old Turkic Orkhon I, Kirat Rai
-//! vowel ligatures, VS15 and VS1-3 presentation, bare keycaps, and U+17D8.
 
 use crate::{
 	encoding::Encoding,
 	grapheme::{ClusterState, width_value},
-	props::{CB_LV, CB_LVT, CB_MASK, CB_OTHER, EPIC_BIT, WIDTH_EMOJI_TEXT, WIDTH_SHIFT, props},
+	props::{CB_LV, CB_LVT, CB_MASK, CB_OTHER, CB_OTHER_INCB_CONSONANT, props},
 	simd::plain_prefix,
 	unit::Unit,
 	utf8::Utf8,
 };
 
-/// `true` for codepoints that provably form single-codepoint clusters next to
-/// each other: break class Other/LV/LVT, not `Extended_Pictographic`, and no
-/// pending VS16/keycap promotion. Two adjacent such codepoints always have a
-/// boundary between them, so runs (CJK prose, precomposed Hangul) are summed
-/// without join-state churn.
+/// `true` for codepoints that take cells and provably form single-codepoint
+/// clusters next to each other: break class Other (`InCB` consonants and
+/// `Extended_Pictographic` included) or a precomposed Hangul LV/LVT syllable.
+/// Two adjacent such codepoints always have a boundary between them (`GB9c`
+/// needs a linker between consonants, `GB11` a ZWJ between pictographs), so
+/// runs are summed without join-state churn, and what follows a run joins
+/// as it would join its last codepoint alone. See [`simple_width`].
 #[inline(always)]
 const fn simple(p: u8) -> bool {
-	matches!(p & CB_MASK, CB_OTHER | CB_LV | CB_LVT)
-		&& p & EPIC_BIT == 0
-		&& (p >> WIDTH_SHIFT) & 3 != WIDTH_EMOJI_TEXT
+	matches!(p & CB_MASK, CB_OTHER | CB_OTHER_INCB_CONSONANT | CB_LV | CB_LVT) && width_value(p) != 0
 }
 
-#[inline(always)]
-const fn promotable_ascii(cp: u32) -> bool {
-	matches!(cp, 0x23 | 0x2a | 0x30..=0x39)
-}
-
-/// Visible width of `input` in terminal cells (extended grapheme clusters,
-/// UAX #11 plus emoji presentation rules, with an ASCII bulk path).
+/// Visible width of `input` in terminal cells, kitty's: per extended grapheme
+/// cluster, with an ASCII bulk path.
 pub fn width<E: Encoding>(input: &[E::Unit]) -> usize {
 	measure_width::<E, false>(input, 0).expect("unbounded width scan cannot fail")
 }
@@ -78,11 +70,10 @@ fn measure_width<E: Encoding, const BOUNDED: bool>(
 			};
 			let run = plain_prefix(&rest[..window]);
 			if run > 0 {
-				// Only `#`, `*`, and digits need the last unit held for
-				// possible VS16/keycap promotion. Other printable ASCII is
-				// additive even when an extending codepoint follows.
-				let promote = promotable_ascii(rest[run - 1].to_u32());
-				let take = if run < rest.len() && promote {
+				// A non-ASCII successor may join the run's last unit, whose
+				// cluster then needs the join state: VS16 widens `#`, `*` and
+				// the digits, Thai and Lao AM widen any of them.
+				let take = if run < rest.len() && rest[run].to_u32() >= 0x80 {
 					run - 1
 				} else {
 					run
@@ -196,12 +187,64 @@ pub fn width_within_str(input: &str, max_width: usize) -> Option<usize> {
 	width_within::<Utf8>(input.as_bytes(), max_width)
 }
 
-/// Standalone terminal-cell width of `c`.
+/// Standalone terminal-cell width of `c`, kitty's.
 ///
-/// Controls, combining marks, and joiners have width zero. Trailing-context
-/// promotion by variation selectors, keycaps, or skin tones requires the full
-/// string APIs.
+/// Two cells for regional indicators, East Asian Wide and Fullwidth
+/// characters and emoji with emoji presentation; zero for marks, format
+/// characters, other default-ignorables, controls, surrogates and
+/// noncharacters; one for everything else, ambiguous, private use and
+/// unassigned code points included. This is also the width of a cluster `c`
+/// starts, before the variation selector and Thai/Lao AM adjustments the
+/// string APIs apply.
+///
+/// ```
+/// assert_eq!(xutf::width_char('中'), 2);
+/// assert_eq!(xutf::width_char('\u{1f1fa}'), 2); // a lone regional indicator
+/// assert_eq!(xutf::width_char('\u{93e}'), 0); // a spacing combining mark
+/// ```
 #[inline]
 pub fn width_char(c: char) -> usize {
 	width_value(props(c as u32))
+}
+
+/// The cells `c` takes when it is *simple*, 0 when it is not.
+///
+/// A simple character takes one or two cells and is a grapheme cluster of its
+/// own between any two simple characters: letters, digits, punctuation,
+/// symbols, CJK ideographs, precomposed Hangul syllables, Indic consonants and
+/// emoji, but not marks, joiners, variation selectors, controls, regional
+/// indicators, prepended characters or conjoining jamo. A run of simple
+/// characters is therefore as wide as the sum of their [`width_char`]s, and
+/// segmentation after the run depends only on its last character: the fast
+/// path of [`width`], and of a terminal printing text.
+///
+/// ```
+/// assert_eq!(xutf::simple_width('a'), 1);
+/// assert_eq!(xutf::simple_width('中'), 2);
+/// assert_eq!(xutf::simple_width('\u{301}'), 0); // joins the character before
+/// assert_eq!(xutf::simple_width('\u{1f1fa}'), 0); // pairs with the next one
+/// ```
+#[inline]
+pub fn simple_width(c: char) -> usize {
+	let p = props(c as u32);
+	if simple(p) { width_value(p) } else { 0 }
+}
+
+/// Whether a variation selector switches `c` between text and emoji
+/// presentation: U+FE0F widens it from one cell to two, U+FE0E narrows it
+/// from two to one.
+///
+/// The bases are the code points of the `Basic_Emoji`, keycap, flag, tag and
+/// modifier sequences of `emoji-sequences.txt`; a terminal printing a
+/// variation selector into a cell whose last character is one resizes that
+/// cell as [`width`] measures it.
+///
+/// ```
+/// assert!(xutf::is_emoji_presentation_base('\u{2764}')); // ❤, one cell
+/// assert_eq!(xutf::width_str("\u{2764}\u{fe0f}"), 2);
+/// assert!(!xutf::is_emoji_presentation_base('中'));
+/// ```
+#[inline]
+pub fn is_emoji_presentation_base(c: char) -> bool {
+	crate::props::is_emoji_presentation_base(c as u32)
 }
