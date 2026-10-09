@@ -250,6 +250,29 @@ pub fn decode_utf8_3x4(input: Simd<u8, 16>) -> Simd<u16, 4> {
 	}
 }
 
+/// Packs four 16-lane byte masks into one 64-bit bitmask, lane 0 in bit 0,
+/// using simdutf's three-`vpaddq` reduction (NEON has no movemask, and the
+/// generic `to_bitmask` extracts lanes one by one).
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn bitmask64(
+	m0: core::arch::aarch64::uint8x16_t,
+	m1: core::arch::aarch64::uint8x16_t,
+	m2: core::arch::aarch64::uint8x16_t,
+	m3: core::arch::aarch64::uint8x16_t,
+) -> u64 {
+	use core::arch::aarch64::*;
+
+	// SAFETY: operates only on vector values; AArch64 mandates NEON.
+	unsafe {
+		let bit: uint8x16_t = vreinterpretq_u8_u64(vdupq_n_u64(0x8040_2010_0804_0201));
+		let s0 = vpaddq_u8(vandq_u8(m0, bit), vandq_u8(m1, bit));
+		let s1 = vpaddq_u8(vandq_u8(m2, bit), vandq_u8(m3, bit));
+		let s2 = vpaddq_u8(s0, s1);
+		vgetq_lane_u64::<0>(vreinterpretq_u64_u8(vpaddq_u8(s2, s2)))
+	}
+}
+
 /// Returns UTF-8 continuation, lead, and three-byte-lead masks for 64 bytes.
 #[inline(always)]
 pub unsafe fn classify_block_u8x64(src: *const u8) -> (u64, u64, u64, bool) {
@@ -257,21 +280,6 @@ pub unsafe fn classify_block_u8x64(src: *const u8) -> (u64, u64, u64, bool) {
 	// SAFETY: callers guarantee 64 readable bytes; AArch64 mandates NEON.
 	unsafe {
 		use core::arch::aarch64::*;
-
-		/// Packs four 16-lane byte masks into one 64-bit bitmask, lane 0 in
-		/// bit 0, using simdutf's three-`vpaddq` reduction (NEON has no
-		/// movemask, and the generic `to_bitmask` extracts lanes one by one).
-		#[inline(always)]
-		unsafe fn bitmask64(m0: uint8x16_t, m1: uint8x16_t, m2: uint8x16_t, m3: uint8x16_t) -> u64 {
-			// SAFETY: operates only on vector values.
-			unsafe {
-				let bit: uint8x16_t = vreinterpretq_u8_u64(vdupq_n_u64(0x8040_2010_0804_0201));
-				let s0 = vpaddq_u8(vandq_u8(m0, bit), vandq_u8(m1, bit));
-				let s1 = vpaddq_u8(vandq_u8(m2, bit), vandq_u8(m3, bit));
-				let s2 = vpaddq_u8(s0, s1);
-				vgetq_lane_u64::<0>(vreinterpretq_u64_u8(vpaddq_u8(s2, s2)))
-			}
-		}
 
 		let a = vld1q_u8(src);
 		let b = vld1q_u8(src.add(16));
@@ -312,6 +320,78 @@ pub unsafe fn classify_block_u8x64(src: *const u8) -> (u64, u64, u64, bool) {
 		let leads = input.simd_ge(Simd::splat(0xc0)).to_bitmask();
 		let three = input.simd_ge(Simd::splat(0xe0)).to_bitmask();
 		(continuation, leads, three, input.simd_ge(Simd::splat(0xf0)).any())
+	}
+}
+
+/// Masks of 64 bytes that decide which four-byte UTF-8 sequences decode to a
+/// supplementary-plane codepoint (two UTF-16 units): the four-byte leads
+/// (`>= 0xf0`), those of them with lead bits `0b111` set, and every byte
+/// with bits `0b11_0000` set. A lead at `p` is supplementary when it is in
+/// the second mask or byte `p + 1` is in the third, so overlong and `0xf8..`
+/// leads stay one unit, as their permissive decode does.
+#[inline(always)]
+pub unsafe fn utf8_four_u8x64(src: *const u8) -> (u64, u64, u64) {
+	#[cfg(target_arch = "aarch64")]
+	// SAFETY: callers guarantee 64 readable bytes; AArch64 mandates NEON.
+	unsafe {
+		use core::arch::aarch64::*;
+
+		let a = vld1q_u8(src);
+		let b = vld1q_u8(src.add(16));
+		let c = vld1q_u8(src.add(32));
+		let d = vld1q_u8(src.add(48));
+		let lead = vdupq_n_u8(0xf0);
+		let four =
+			bitmask64(vcgeq_u8(a, lead), vcgeq_u8(b, lead), vcgeq_u8(c, lead), vcgeq_u8(d, lead));
+		let high = vdupq_n_u8(0x07);
+		let plane =
+			bitmask64(vtstq_u8(a, high), vtstq_u8(b, high), vtstq_u8(c, high), vtstq_u8(d, high));
+		let low = vdupq_n_u8(0x30);
+		let next = bitmask64(vtstq_u8(a, low), vtstq_u8(b, low), vtstq_u8(c, low), vtstq_u8(d, low));
+		(four, four & plane, next)
+	}
+	#[cfg(not(target_arch = "aarch64"))]
+	{
+		// SAFETY: callers guarantee 64 readable bytes.
+		let input = unsafe { Simd::<u8, 64>::from_slice(core::slice::from_raw_parts(src, 64)) };
+		let four = input.simd_ge(Simd::splat(0xf0)).to_bitmask();
+		let plane = (input & Simd::splat(0x07))
+			.simd_ne(Simd::splat(0))
+			.to_bitmask();
+		let next = (input & Simd::splat(0x30))
+			.simd_ne(Simd::splat(0))
+			.to_bitmask();
+		(four, four & plane, next)
+	}
+}
+
+/// Position of set bit `k` of `x`, counting from the lowest (`k = 0`); `x`
+/// must have more than `k` set bits.
+#[inline]
+pub fn nth_set_bit(x: u64, k: u32) -> u32 {
+	debug_assert!(x.count_ones() > k);
+	#[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
+	{
+		// SAFETY: compiled only with BMI2 enabled.
+		unsafe { core::arch::x86_64::_pdep_u64(1 << k, x) }.trailing_zeros()
+	}
+	#[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
+	{
+		// Whole bytes by popcount, then at most seven bits by clearing.
+		let (mut x, mut k, mut base) = (x, k, 0);
+		loop {
+			let ones = (x & 0xff).count_ones();
+			if k < ones {
+				break;
+			}
+			k -= ones;
+			x >>= 8;
+			base += 8;
+		}
+		for _ in 0..k {
+			x &= x - 1;
+		}
+		base + x.trailing_zeros()
 	}
 }
 

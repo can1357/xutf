@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 use xutf::{
 	AsciiCase, Bom, Encoding, Text, Utf8, Utf16, Utf16Be, Utf32, chars, codepoints, compare,
 	compare_ignore_ascii_case, detect_bom, equals, equals_ignore_ascii_case, from_bytes, to_string,
-	transcode, transcode_into, transcode_with_case, transcoded_len,
+	transcode, transcode_into, transcode_with_case, transcoded_len, unit_offset,
 };
 
 fn utf16(s: &str) -> Vec<u16> {
@@ -300,6 +300,121 @@ fn transcode_into_never_splits_codepoints() {
 		assert_eq!(&dst[..written], expect, "cap {cap}");
 		// Everything read was fully written.
 		assert_eq!(transcoded_len::<Utf8, Utf16>(&src[..read]), written, "cap {cap}");
+	}
+}
+
+/// Checks [`unit_offset`] for every `n` up to one past the transcoded length
+/// against the largest codepoint boundary (walking the scalar decoder) whose
+/// prefix transcodes to at most `n` units.
+fn check_offsets<F: Encoding, T: Encoding>(src: &[F::Unit]) {
+	// (boundary, output units before it)
+	let mut stops = vec![(0, 0)];
+	let mut rest = src;
+	while !rest.is_empty() {
+		let from = src.len() - rest.len();
+		F::decode(&mut rest);
+		let at = src.len() - rest.len();
+		let units = stops.last().unwrap().1 + transcoded_len::<F, T>(&src[from..at]);
+		stops.push((at, units));
+	}
+	let total = stops.last().unwrap().1;
+	assert_eq!(total, transcoded_len::<F, T>(src));
+	for n in 0..=total + 1 {
+		let want = stops[stops.partition_point(|&(_, units)| units <= n) - 1].0;
+		assert_eq!(unit_offset::<F, T>(src, n), want, "n {n} of {total}");
+	}
+}
+
+/// Byte soup that is mostly well-formed UTF-8 (long ASCII runs, two- to
+/// four-byte sequences) with malformed pieces mixed in: stray continuations,
+/// truncated leads, `0xf8..` bytes and overlong or out-of-range four-byte
+/// sequences.
+fn utf8_soup(state: &mut u64, len: usize, malformed: bool) -> Vec<u8> {
+	const VALID: &[&[u8]] = &[
+		b"x",
+		b"The quick brown fox jumps over the lazy dog, ",
+		"é".as_bytes(),
+		"Ж".as_bytes(),
+		"日".as_bytes(),
+		"\u{ffff}".as_bytes(),
+		"😀".as_bytes(),
+		"\u{10ffff}".as_bytes(),
+	];
+	const MALFORMED: &[&[u8]] = &[
+		b"\x80",
+		b"\xbf\xbf",
+		b"\xc3",
+		b"\xe6\x97",
+		b"\xf0\x9f\x98",
+		b"\xf8",
+		b"\xff\x80",
+		b"\xf0\x80\x80\x80",
+		b"\xf4\x90\x80\x80",
+		b"\xc0\x80",
+	];
+	let mut out = Vec::with_capacity(len + 64);
+	while out.len() < len {
+		*state = state
+			.wrapping_mul(6364136223846793005)
+			.wrapping_add(1442695040888963407);
+		let pick = (*state >> 33) as usize;
+		let piece = if malformed && pick.is_multiple_of(16) {
+			MALFORMED[pick / 16 % MALFORMED.len()]
+		} else {
+			VALID[pick % VALID.len()]
+		};
+		out.extend_from_slice(piece);
+	}
+	out
+}
+
+#[test]
+fn unit_offset_matches_std_char_and_utf16_indices() {
+	let long = CORPUS.concat().repeat(3);
+	for s in CORPUS.iter().copied().chain([long.as_str()]) {
+		let chars = s.chars().count();
+		for n in 0..=chars + 1 {
+			let expect = s.char_indices().nth(n).map_or(s.len(), |(at, _)| at);
+			assert_eq!(s.unit_offset::<u32>(n), expect, "{s:?} char {n}");
+		}
+		// UTF-16 index -> byte offset, rounding a low surrogate down to its
+		// character.
+		let mut expect = Vec::new();
+		for (at, c) in s.char_indices() {
+			expect.extend(std::iter::repeat_n(at, c.len_utf16()));
+		}
+		for n in 0..=expect.len() + 1 {
+			let want = expect.get(n).copied().unwrap_or(s.len());
+			assert_eq!(s.unit_offset::<u16>(n), want, "{s:?} unit {n}");
+		}
+	}
+}
+
+#[test]
+fn unit_offset_follows_the_permissive_decoder() {
+	let mut state = 0x9e37_79b9_7f4a_7c15u64;
+	for case in 0..600 {
+		let len = case % 300;
+		let src = utf8_soup(&mut state, len, case % 3 != 0);
+		check_offsets::<Utf8, Utf32>(&src);
+		check_offsets::<Utf8, Utf16>(&src);
+		check_offsets::<Utf8, Utf16Be>(&src);
+		check_offsets::<Utf8, Utf8>(&src);
+
+		let units16: Vec<u16> = src
+			.chunks(2)
+			.map(|pair| u16::from_le_bytes([pair[0], *pair.get(1).unwrap_or(&0xd8)]))
+			.collect();
+		check_offsets::<Utf16, Utf8>(&units16);
+		check_offsets::<Utf16, Utf32>(&units16);
+		check_offsets::<Utf16, Utf16Be>(&units16);
+		check_offsets::<Utf16, Utf16>(&units16);
+		check_offsets::<Utf16Be, Utf8>(&units16);
+
+		let units32: Vec<u32> = codepoints::<Utf8>(&src).collect();
+		check_offsets::<Utf32, Utf8>(&units32);
+		check_offsets::<Utf32, Utf16>(&units32);
+		check_offsets::<Utf32, Utf32<true>>(&units32);
 	}
 }
 

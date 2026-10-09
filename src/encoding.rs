@@ -97,6 +97,16 @@ pub const fn same_encoding<A: Encoding, B: Encoding>() -> bool {
 	A::KIND as u8 == B::KIND as u8 && A::FOREIGN == B::FOREIGN
 }
 
+/// `true` when transcoding `A` to `B` maps every unit to exactly one unit:
+/// byte-identical encodings (a bulk copy) and UTF-32 in either byte order.
+/// UTF-16 across byte orders is not, since a high surrogate followed by a
+/// non-surrogate decodes from two units and re-encodes as one.
+#[inline(always)]
+pub const fn unit_preserving<A: Encoding, B: Encoding>() -> bool {
+	size_of::<A::Unit>() == size_of::<B::Unit>()
+		&& (same_encoding::<A, B>() || A::KIND as u8 != Kind::Utf16 as u8)
+}
+
 /// Iterator over the raw codepoints of an encoded slice.
 ///
 /// Created by [`codepoints`].

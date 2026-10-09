@@ -9,7 +9,7 @@ use support::{u16_units, u32_units};
 use xutf::{
 	AsciiCase, Bom, Encoding, Unit, Utf8, Utf16, Utf32, chars, codepoints, compare,
 	compare_ignore_ascii_case, detect_bom, equals, equals_ignore_ascii_case, from_bytes, to_string,
-	transcode, transcode_into, transcode_with_case, transcoded_len,
+	transcode, transcode_into, transcode_with_case, transcoded_len, unit_offset,
 };
 
 fn scalar(seed: u32) -> u32 {
@@ -155,6 +155,22 @@ fn check_transcode<F: Encoding, T: Encoding>(input: &[F::Unit], capacity: usize)
 	}
 }
 
+fn check_offset<F: Encoding, T: Encoding>(input: &[F::Unit], seed: usize) {
+	// (codepoint boundary, output units before it)
+	let mut stops = vec![(0, 0)];
+	let mut rest = input;
+	while !rest.is_empty() {
+		let from = input.len() - rest.len();
+		F::decode(&mut rest);
+		let at = input.len() - rest.len();
+		let units = reference_transcode::<F, T>(&input[from..at], AsciiCase::Preserve).len();
+		stops.push((at, stops.last().unwrap().1 + units));
+	}
+	let n = seed % (stops.last().unwrap().1 + 2);
+	let want = stops[stops.partition_point(|&(_, units)| units <= n) - 1].0;
+	assert_eq!(unit_offset::<F, T>(input, n), want);
+}
+
 fn reference_compare<A: Encoding, B: Encoding>(
 	a: &[A::Unit],
 	b: &[B::Unit],
@@ -255,6 +271,7 @@ fn check_pair<F: Encoding, T: Encoding>(a: &[F::Unit], b: &[T::Unit], capacity: 
 	check_iterators::<F>(a);
 	check_iterators::<T>(b);
 	check_transcode::<F, T>(a, capacity);
+	check_offset::<F, T>(a, capacity);
 	check_compare::<F, T>(a, b);
 	check_to_string::<F>(a);
 }

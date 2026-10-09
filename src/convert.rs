@@ -7,7 +7,7 @@ use alloc::{
 };
 
 use crate::{
-	encoding::{Encoding, Kind, same_encoding},
+	encoding::{Encoding, same_encoding, unit_preserving},
 	simd::{NARROW, TRANS_WIDE, ascii_run},
 	unit::{Unit, fold_case_scalar},
 	utf8::Utf8,
@@ -238,15 +238,7 @@ pub fn transcode_with_case<F: Encoding, T: Encoding>(
 
 /// Unit count `src` would occupy once transcoded to `T` (`utf_length`).
 pub fn transcoded_len<F: Encoding, T: Encoding>(src: &[F::Unit]) -> usize {
-	// One unit in, one unit out — except UTF-16 across byte orders, where a
-	// high surrogate followed by a non-surrogate decodes from two units and
-	// re-encodes as one (byte-identical encodings take the bulk copy in
-	// `transcode_into` and keep every unit).
-	let unit_preserving = const {
-		size_of::<F::Unit>() == size_of::<T::Unit>()
-			&& (same_encoding::<F, T>() || F::KIND as u8 != Kind::Utf16 as u8)
-	};
-	if unit_preserving {
+	if const { unit_preserving::<F, T>() } {
 		return src.len();
 	}
 	let simd_ok = const { !F::FOREIGN };

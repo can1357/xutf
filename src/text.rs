@@ -10,6 +10,7 @@ use crate::{
 		StrGraphemeIndices as StrIndexedGraphemes, StrGraphemes, grapheme_indices,
 		grapheme_indices_str, graphemes, graphemes_str,
 	},
+	offset,
 	truncate::{
 		skip_columns, skip_columns_str, truncate, truncate_measured, truncate_measured_str,
 		truncate_str,
@@ -131,6 +132,16 @@ pub trait Text {
 	#[inline]
 	fn transcoded_len<U: Unit>(&self) -> usize {
 		convert::transcoded_len::<Self::Encoding, U::Native>(self.as_units())
+	}
+
+	/// Offset of unit `n` of this text transcoded to unit type `U`, rounded
+	/// down to the codepoint holding it (see
+	/// [`unit_offset`](crate::unit_offset)): `s.unit_offset::<u32>(n)` is the
+	/// byte offset of `s`'s char `n`, and `s.unit_offset::<u16>(n)` that of
+	/// UTF-16 index `n`.
+	#[inline]
+	fn unit_offset<U: Unit>(&self, n: usize) -> usize {
+		offset::unit_offset::<Self::Encoding, U::Native>(self.as_units(), n)
 	}
 
 	/// Codepoint equality against any native-endian text — `str`, `String`,

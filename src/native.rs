@@ -1733,8 +1733,10 @@ fn utf32_to_utf16(src: &[u32], dst: &mut [u16]) -> (usize, usize) {
 	scalar_finish::<Utf32, Utf16>(src, dst, i, o)
 }
 
+/// Reinterprets a unit slice whose primitive the caller's sealed
+/// [`Encoding::KIND`] dispatch already fixed.
 #[inline(always)]
-const unsafe fn as_units<T, U>(slice: &[T]) -> &[U] {
+pub const unsafe fn as_units<T, U>(slice: &[T]) -> &[U] {
 	// SAFETY: callers dispatch on sealed Encoding::KIND, which uniquely fixes
 	// the unit primitive. Length is in units, so it remains unchanged.
 	unsafe { core::slice::from_raw_parts(slice.as_ptr().cast(), slice.len()) }

@@ -35,8 +35,10 @@
 //!   crate.
 //! - **Method-level entry points** for the codec itself: [`Text::transcode`]
 //!   infers the target encoding from the container it fills ([`TextBuf`]),
-//!   [`Text::eq_text`] compares across encodings, and [`Encoding::from_bytes`]
-//!   decodes a BOM-tagged byte stream into that encoding's
+//!   [`Text::unit_offset`] maps a char or UTF-16 index back to an offset
+//!   ([`unit_offset`], the inverse of [`transcoded_len`]), [`Text::eq_text`]
+//!   compares across encodings, and [`Encoding::from_bytes`] decodes a
+//!   BOM-tagged byte stream into that encoding's
 //!   [`Container`](Encoding::Container).
 //!
 //! Special-op mapping from the C++ original:
@@ -72,6 +74,7 @@ mod grapheme;
 mod kernel;
 mod native;
 mod normalize;
+mod offset;
 mod props;
 #[cfg(test)]
 mod props_tests;
@@ -107,6 +110,7 @@ pub use normalize::{
 	IntoUnicodeNormalized, MakeUnicodeNormalized, NormalizationError, ToUnicodeNormalized,
 	canonical_combining_class, is_nfc, is_nfc_codepoints, is_nfkc, is_nfkc_codepoints,
 };
+pub use offset::unit_offset;
 pub use props::UNICODE_VERSION;
 pub use read::{BufReadCharsExt, Chars, CharsRaw, ReadCharError, StreamDecode};
 pub use strip::{IntoAnsiStripped, MakeAnsiStripped, ToAnsiStripped, width_ansi, width_ansi_str};

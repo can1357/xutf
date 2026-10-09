@@ -80,6 +80,10 @@ harness = false
 name = "chars"
 harness = false
 
+[[bench]]
+name = "offset"
+harness = false
+
 
 [lints.rust]
 # ──────────────────────────────────────────────────────────────────────────────

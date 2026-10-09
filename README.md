@@ -268,8 +268,10 @@ tables; regenerate with `scripts/bench_hosts.sh` + `scripts/bench_viz.py`.
 | `width_within(…, 80)` | 80-column input fits  | 10.6 GB/s            | full `visible_width`: 11.0 GB/s                  |
 | `grapheme_indices`    | all 4 corpora         | 0.5–0.7 GB/s         | 2.8–3.8× `useg`; within 3.2% of `graphemes`      |
 | `wrap_measured`       | CJK/emoji, 40/80 cols | 0.6–0.7 GB/s         | 1.30–1.36× wrap + remeasure; within 2.5% of wrap |
+| `unit_offset::<u32>`  | char index, 6 corpora | 14.5–19.5 GB/s       | 8.0–23× `char_indices().nth`                     |
+| `unit_offset::<u16>`  | UTF-16 idx, 6 corpora | 9.1–18.4 GB/s        | 2.2–11× a `char_indices` walk                    |
 
-Early-exit benchmarks measure latency per call over 80 columns of a 1 MiB line. The bounded-width benchmark black-boxes both input and result.
+Early-exit benchmarks measure latency per call over 80 columns of a 1 MiB line. The bounded-width benchmark black-boxes both input and result. Offsets seek to the middle of 2 KiB and 1 MiB inputs (`cargo bench --bench offset`).
 
 Highlights: graphemes 3.3–12.6× over `unicode-segmentation` (width included
 for free), wrap 6.4–27× over `textwrap`, fixed-width truncation O(cells) not
@@ -298,6 +300,10 @@ let be: Vec<u16> = xutf::transcode::<Utf16, Utf16Be>(&utf16);
 // Size a buffer without transcoding, or fill a fixed one.
 let mut buf = vec![0u8; utf16.transcoded_len::<u8>()];
 let (read, written) = utf16.transcode_into(&mut buf);
+
+// Map a char or UTF-16 index (JavaScript, Cocoa, Win32) back to a byte offset.
+assert_eq!("naïve café 👋".unit_offset::<u32>(3), 4);
+assert_eq!("a😀b".unit_offset::<u16>(3), 5);
 
 // Compare across encodings without converting.
 assert!("naïve café 👋".eq_text(&utf16));
@@ -401,12 +407,12 @@ cargo fuzz run text  -- -max_total_time=60   # graphemes, width, truncate, wrap
 ```
 
 `codec` pins every encoding pair against scalar decode/encode: unit counts
-(`transcoded_len` = `transcode`), bounded `transcode_into` prefixes, codepoint
-ordering, and BOM dispatch. `text` pins cluster boundaries against
-`unicode-segmentation` on valid text, and on malformed input pins the
-allocation-free primitives to the input's own cluster decomposition: widths
-sum per cluster, truncation and wrapping only cut on boundaries, and wrapping
-drops nothing but space and line-break separators.
+(`transcoded_len` = `transcode`), bounded `transcode_into` prefixes,
+`unit_offset` boundaries, codepoint ordering, and BOM dispatch. `text` pins
+cluster boundaries against `unicode-segmentation` on valid text, and on
+malformed input pins the allocation-free primitives to the input's own cluster
+decomposition: widths sum per cluster, truncation and wrapping only cut on
+boundaries, and wrapping drops nothing but space and line-break separators.
 
 ## License
 
