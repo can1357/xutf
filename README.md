@@ -41,6 +41,13 @@ roughly 1.5–2× ahead on typical text, and **3–10×** ahead on emoji-heavy i
   from any `BufRead` in UTF-8/16/32 (either byte order), decoding in batches
   from the reader's own buffer; errors carry the offending bytes. Drop-in for
   the `utf8-chars` crate, 2.5-6x its throughput (`cargo bench --bench chars`).
+- **Validation of byte streams cut anywhere** — `valid_prefix` is the valid
+  part `str::from_utf8` reports, checked 64 bytes at a time with the
+  Keiser–Lemire lookup algorithm (on par with `simdutf8` on CJK text);
+  `valid_text_prefix` also stops at C0 controls and DEL, for a terminal's
+  printable runs; `Utf8Decoder` takes the rest a byte at a time with
+  maximal-subpart replacement. `plain_prefix` measures printable ASCII and
+  `wide_run` decodes up to 16 two-cell CJK/Hangul characters at once.
 - **BOM detection** — decode whatever the BOM says, defaulting to UTF-8.
 - **`#![no_std]`**, zero runtime dependencies, Unicode 17.0 tables generated
   from the UCD.

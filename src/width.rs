@@ -12,9 +12,15 @@
 //! Bounded measurement can stop as soon as a limit is exceeded, while
 //! per-character measurement reports the standalone width of one scalar.
 
+use core::simd::{
+	Mask, Simd,
+	cmp::{SimdPartialEq, SimdPartialOrd},
+};
+
 use crate::{
 	encoding::Encoding,
 	grapheme::{ClusterState, width_value},
+	kernel::{decode_utf8_3x16, load_utf8_3x16},
 	props::{CB_LV, CB_LVT, CB_MASK, CB_OTHER, CB_OTHER_INCB_CONSONANT, props},
 	simd::plain_prefix,
 	unit::Unit,
@@ -230,6 +236,83 @@ pub fn simple_width(c: char) -> usize {
 	if simple(p) { width_value(p) } else { 0 }
 }
 
+/// How many characters [`wide_run`] takes at once.
+pub const WIDE_RUN: usize = 16;
+
+/// Ranges of code points that are all simple and two cells wide
+/// ([`simple_width`]): CJK punctuation up to the tone marks, ideographs
+/// (extension A and the unified block), Hangul syllables and the fullwidth
+/// forms. [`wide_run`] takes a character inside them without the property
+/// table.
+const WIDE_RANGES: [(u16, u16); 5] =
+	[(0x3000, 0x3029), (0x3400, 0x4dbf), (0x4e00, 0x9fff), (0xac00, 0xd7a3), (0xff01, 0xff60)];
+
+/// Decodes the simple two-cell characters leading `bytes`, up to
+/// [`WIDE_RUN`] of them, together.
+///
+/// The characters are the three-byte ones [`simple_width`] gives two
+/// cells: CJK ideographs and punctuation, Hangul syllables, fullwidth
+/// forms. Their code points go to `points` and their count is returned.
+/// One interleaved load splits the bytes into lanes and the characters are
+/// classified with no branch per character, for a terminal to write a cell
+/// and its spacer each. Malformed sequences end the run like any other
+/// character.
+///
+/// ```
+/// let mut points = [0; xutf::WIDE_RUN];
+/// assert_eq!(xutf::wide_run("中文字a".as_bytes(), &mut points), 3);
+/// assert_eq!(points[..3], [0x4e2d, 0x6587, 0x5b57]);
+/// assert_eq!(xutf::wide_run("a中".as_bytes(), &mut points), 0);
+/// ```
+pub fn wide_run(bytes: &[u8], points: &mut [u16; WIDE_RUN]) -> usize {
+	match bytes.first_chunk() {
+		Some(bytes) => wide_run_48(bytes, points),
+		None => wide_run_short(bytes, points),
+	}
+}
+
+/// [`wide_run`] over fewer than 48 bytes, followed by zeros, which end the
+/// run.
+#[inline(never)]
+fn wide_run_short(bytes: &[u8], points: &mut [u16; WIDE_RUN]) -> usize {
+	let mut padded = [0; 3 * WIDE_RUN];
+	padded[..bytes.len()].copy_from_slice(bytes);
+	wide_run_48(&padded, points)
+}
+
+/// [`wide_run`] over exactly the 48 bytes 16 three-byte characters take.
+#[inline(always)]
+fn wide_run_48(bytes: &[u8; 3 * WIDE_RUN], points: &mut [u16; WIDE_RUN]) -> usize {
+	// SAFETY: `bytes` spans 48 bytes.
+	let (leads, middles, tails) = unsafe { load_utf8_3x16(bytes.as_ptr()) };
+	let continuation = |v: Simd<u8, WIDE_RUN>| (v & Simd::splat(0xc0)).simd_eq(Simd::splat(0x80));
+	// Up to the first lane that is not a three-byte lead and two
+	// continuations, the lanes hold whole characters back to back.
+	let shaped = (leads & Simd::splat(0xf0)).simd_eq(Simd::splat(0xe0))
+		& continuation(middles)
+		& continuation(tails);
+	let decoded = decode_utf8_3x16(leads, middles, tails);
+	*points = decoded.to_array();
+	// `point - first <= last - first`, wrapping.
+	let known = WIDE_RANGES
+		.iter()
+		.fold(Mask::splat(false), |known, &(first, last)| {
+			known | (decoded - Simd::splat(first)).simd_le(Simd::splat(last - first))
+		});
+	let run = (!shaped).first_set().unwrap_or(WIDE_RUN);
+	// The lanes outside the known ranges go to the property table; an
+	// overlong form or a surrogate decodes to no wide character.
+	let mut unknown = (!known).to_bitmask() & ((1 << run) - 1);
+	while unknown != 0 {
+		let lane = unknown.trailing_zeros() as usize;
+		if char::from_u32(points[lane].into()).map_or(0, simple_width) != 2 {
+			return lane;
+		}
+		unknown &= unknown - 1;
+	}
+	run
+}
+
 /// Whether a variation selector switches `c` between text and emoji
 /// presentation: U+FE0F widens it from one cell to two, U+FE0E narrows it
 /// from two to one.
@@ -247,4 +330,19 @@ pub fn simple_width(c: char) -> usize {
 #[inline]
 pub fn is_emoji_presentation_base(c: char) -> bool {
 	crate::props::is_emoji_presentation_base(c as u32)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn wide_ranges_hold_only_simple_wide_characters() {
+		for (first, last) in WIDE_RANGES {
+			for point in first..=last {
+				let c = char::from_u32(point.into()).unwrap();
+				assert_eq!(simple_width(c), 2, "U+{point:04X}");
+			}
+		}
+	}
 }

@@ -356,3 +356,30 @@ fn grapheme_control_status_uses_the_base_codepoint() {
 		.collect();
 	assert_eq!(controls, [false, true, false]);
 }
+
+#[test]
+fn joins_simple_is_false_only_when_no_simple_character_joins() {
+	// Every prefix of the corpus as a cluster, against every simple
+	// character of a sample spanning the simple break classes.
+	let simple: Vec<char> = "aZ9~é中가갂क\u{937}😀👨🏽ꦀ"
+		.chars()
+		.filter(|&c| xutf::simple_width(c) != 0)
+		.collect();
+	for text in CORPUS {
+		for start in text.char_indices().map(|(i, _)| i) {
+			let mut chars = text[start..].chars();
+			let Some(first) = chars.next() else { continue };
+			let mut cluster = Cluster::new(first);
+			for c in chars {
+				if !cluster.joins_simple() {
+					for &next in &simple {
+						assert!(!cluster.clone().push(next), "{text:?} from {start}, then {next:?}");
+					}
+				}
+				if !cluster.push(c) {
+					break;
+				}
+			}
+		}
+	}
+}

@@ -28,6 +28,11 @@
 //!   surface of the `unicode-normalization`, `unicode-properties` and
 //!   `unicode-script` crates from one table family, also as [`Ucd`] methods on
 //!   `char`/`u32`.
+//! - **Validation of byte streams cut anywhere**: [`valid_prefix`] (the valid
+//!   part [`core::str::from_utf8`] reports, 64 bytes at a time with SIMD),
+//!   [`valid_text_prefix`] (stopping at C0 controls and DEL as well),
+//!   [`Utf8Decoder`] for the bytes they leave, and the terminal printing fast
+//!   paths [`plain_prefix`] and [`wide_run`].
 //! - **Strict stream decoding** from any [`std::io::BufRead`]
 //!   ([`BufReadCharsExt`]): batch-decoded `char` iteration in every supported
 //!   encoding, with errors that carry the offending bytes ([`ReadCharError`]).
@@ -91,6 +96,7 @@ mod unit;
 mod utf16;
 mod utf32;
 mod utf8;
+mod valid;
 mod width;
 mod wrap;
 #[cfg(target_arch = "x86_64")]
@@ -113,6 +119,7 @@ pub use normalize::{
 pub use offset::unit_offset;
 pub use props::UNICODE_VERSION;
 pub use read::{BufReadCharsExt, Chars, CharsRaw, ReadCharError, StreamDecode};
+pub use simd::plain_prefix;
 pub use strip::{IntoAnsiStripped, MakeAnsiStripped, ToAnsiStripped, width_ansi, width_ansi_str};
 pub use text::Text;
 pub use truncate::{
@@ -126,9 +133,10 @@ pub use unit::Unit;
 pub use utf8::Utf8;
 pub use utf16::Utf16;
 pub use utf32::Utf32;
+pub use valid::{Utf8Decoder, Utf8Step, valid_prefix, valid_text_prefix};
 pub use width::{
-	is_emoji_presentation_base, simple_width, width, width_char, width_str, width_within,
-	width_within_str,
+	WIDE_RUN, is_emoji_presentation_base, simple_width, wide_run, width, width_char, width_str,
+	width_within, width_within_str,
 };
 pub use wrap::{
 	StrWrapped, Wrapped, WrappedLine, WrappedMeasured, wrap, wrap_measured, wrap_measured_str,

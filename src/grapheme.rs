@@ -509,6 +509,29 @@ impl Cluster {
 		self.0.try_join(c as u32, props(c as u32))
 	}
 
+	/// Whether some simple character ([`crate::simple_width`]) could still
+	/// join the cluster: after a prepended character (`GB9b`), a Hangul L
+	/// jamo (`GB6`), an open `InCB` linker chain (`GB9c`) or an emoji ZWJ
+	/// chain (`GB11`). `false` proves that whatever simple character comes
+	/// next starts a cluster of its own, with no [`Cluster::push`] to try.
+	///
+	/// ```
+	/// let mut cluster = xutf::Cluster::new('e');
+	/// cluster.push('\u{301}');
+	/// assert!(!cluster.joins_simple());
+	/// let mut cluster = xutf::Cluster::new('\u{915}'); // क
+	/// cluster.push('\u{94d}'); // virama: a consonant may follow
+	/// assert!(cluster.joins_simple());
+	/// ```
+	#[inline]
+	#[must_use]
+	pub const fn joins_simple(&self) -> bool {
+		let state = &self.0;
+		matches!(state.prev, CB_PREPEND | CB_L)
+			|| state.incb == 2
+			|| (state.prev == CB_ZWJ && state.epic == 2)
+	}
+
 	/// Terminal-cell width of the cluster so far, as [`graphemes`] reports
 	/// it for the same codepoints.
 	#[inline]

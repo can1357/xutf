@@ -136,38 +136,45 @@ unsafe fn store_utf8_3x16(
 /// Shuffles one byte vector using portable SIMD indices.
 #[inline(always)]
 pub fn shuffle_u8x16(input: Simd<u8, 16>, indexes: [u8; 16]) -> Simd<u8, 16> {
+	lookup_u8x16(input, Simd::from_array(indexes))
+}
+
+/// Lane `i` of the result is lane `indexes[i]` of `table` (`indexes` below
+/// 16): one `tbl` on `AArch64`, `pshufb` with SSSE3.
+#[inline(always)]
+pub fn lookup_u8x16(table: Simd<u8, 16>, indexes: Simd<u8, 16>) -> Simd<u8, 16> {
 	#[cfg(target_arch = "aarch64")]
 	{
-		use core::arch::aarch64::{vld1q_u8, vqtbl1q_u8};
+		use core::arch::aarch64::vqtbl1q_u8;
 
 		// SAFETY: AArch64 mandates NEON and both values span sixteen bytes.
-		unsafe { Simd::from(vqtbl1q_u8(input.into(), vld1q_u8(indexes.as_ptr()))) }
+		unsafe { Simd::from(vqtbl1q_u8(table.into(), indexes.into())) }
 	}
 	#[cfg(target_arch = "x86_64")]
 	{
 		#[target_feature(enable = "ssse3")]
-		fn shuffle_ssse3(input: Simd<u8, 16>, indexes: [u8; 16]) -> Simd<u8, 16> {
+		fn lookup_ssse3(table: Simd<u8, 16>, indexes: Simd<u8, 16>) -> Simd<u8, 16> {
 			use core::arch::x86_64::{_mm_loadu_si128, _mm_shuffle_epi8, _mm_storeu_si128};
 
 			let mut output = [0; 16];
 			// SAFETY: each pointer spans exactly one 128-bit vector.
 			unsafe {
-				let input = _mm_loadu_si128(input.as_array().as_ptr().cast());
-				let indexes = _mm_loadu_si128(indexes.as_ptr().cast());
-				_mm_storeu_si128(output.as_mut_ptr().cast(), _mm_shuffle_epi8(input, indexes));
+				let table = _mm_loadu_si128(table.as_array().as_ptr().cast());
+				let indexes = _mm_loadu_si128(indexes.as_array().as_ptr().cast());
+				_mm_storeu_si128(output.as_mut_ptr().cast(), _mm_shuffle_epi8(table, indexes));
 			}
 			Simd::from_array(output)
 		}
 		if std::arch::is_x86_feature_detected!("ssse3") {
 			// SAFETY: the feature test proved SSSE3; without it `swizzle_dyn`
 			// lowers to a scalar byte loop that cripples every table path.
-			return unsafe { shuffle_ssse3(input, indexes) };
+			return unsafe { lookup_ssse3(table, indexes) };
 		}
-		input.swizzle_dyn(Simd::from_array(indexes))
+		table.swizzle_dyn(indexes)
 	}
 	#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 	{
-		input.swizzle_dyn(Simd::from_array(indexes))
+		table.swizzle_dyn(indexes)
 	}
 }
 
@@ -482,21 +489,36 @@ pub unsafe fn utf8_2x32_to_utf32(src: *const u8, dst: *mut u32) -> bool {
 	true
 }
 
+/// The first, second and third bytes of 16 three-byte sequences at `src`,
+/// each in a vector: one `ld3` on `AArch64`.
+///
+/// # Safety
+/// `src` points to 48 readable bytes.
 #[inline(always)]
-unsafe fn load_utf8_3x16(src: *const u8) -> (Simd<u8, 16>, Simd<u8, 16>, Simd<u8, 16>) {
-	// SAFETY: callers guarantee 48 readable bytes.
-	let (a, b, c) = unsafe { (load_u8x16(src), load_u8x16(src.add(16)), load_u8x16(src.add(32))) };
-	let lead_lo: Simd<u8, 8> = simd_swizzle!(a, b, [0, 3, 6, 9, 12, 15, 18, 21]);
-	let lead_hi: Simd<u8, 8> = simd_swizzle!(b, c, [8, 11, 14, 17, 20, 23, 26, 29]);
-	let middle_lo: Simd<u8, 8> = simd_swizzle!(a, b, [1, 4, 7, 10, 13, 16, 19, 22]);
-	let middle_hi: Simd<u8, 8> = simd_swizzle!(b, c, [9, 12, 15, 18, 21, 24, 27, 30]);
-	let tail_lo: Simd<u8, 8> = simd_swizzle!(a, b, [2, 5, 8, 11, 14, 17, 20, 23]);
-	let tail_hi: Simd<u8, 8> = simd_swizzle!(b, c, [10, 13, 16, 19, 22, 25, 28, 31]);
-	(
-		combine_u8x8(lead_lo, lead_hi),
-		combine_u8x8(middle_lo, middle_hi),
-		combine_u8x8(tail_lo, tail_hi),
-	)
+pub unsafe fn load_utf8_3x16(src: *const u8) -> (Simd<u8, 16>, Simd<u8, 16>, Simd<u8, 16>) {
+	#[cfg(target_arch = "aarch64")]
+	{
+		// SAFETY: callers guarantee 48 readable bytes; AArch64 mandates NEON.
+		let lanes = unsafe { core::arch::aarch64::vld3q_u8(src) };
+		(lanes.0.into(), lanes.1.into(), lanes.2.into())
+	}
+	#[cfg(not(target_arch = "aarch64"))]
+	{
+		// SAFETY: callers guarantee 48 readable bytes.
+		let (a, b, c) =
+			unsafe { (load_u8x16(src), load_u8x16(src.add(16)), load_u8x16(src.add(32))) };
+		let lead_lo: Simd<u8, 8> = simd_swizzle!(a, b, [0, 3, 6, 9, 12, 15, 18, 21]);
+		let lead_hi: Simd<u8, 8> = simd_swizzle!(b, c, [8, 11, 14, 17, 20, 23, 26, 29]);
+		let middle_lo: Simd<u8, 8> = simd_swizzle!(a, b, [1, 4, 7, 10, 13, 16, 19, 22]);
+		let middle_hi: Simd<u8, 8> = simd_swizzle!(b, c, [9, 12, 15, 18, 21, 24, 27, 30]);
+		let tail_lo: Simd<u8, 8> = simd_swizzle!(a, b, [2, 5, 8, 11, 14, 17, 20, 23]);
+		let tail_hi: Simd<u8, 8> = simd_swizzle!(b, c, [10, 13, 16, 19, 22, 25, 28, 31]);
+		(
+			combine_u8x8(lead_lo, lead_hi),
+			combine_u8x8(middle_lo, middle_hi),
+			combine_u8x8(tail_lo, tail_hi),
+		)
+	}
 }
 
 #[inline(always)]
@@ -508,8 +530,10 @@ fn valid_utf8_3x16(leads: Simd<u8, 16>, middles: Simd<u8, 16>, tails: Simd<u8, 1
 		&& (tails & Simd::splat(0xc0)).simd_eq(Simd::splat(0x80)).all()
 }
 
+/// The code points of 16 three-byte sequences split by [`load_utf8_3x16`],
+/// trusting their shape.
 #[inline(always)]
-fn decode_utf8_3x16(
+pub fn decode_utf8_3x16(
 	leads: Simd<u8, 16>,
 	middles: Simd<u8, 16>,
 	tails: Simd<u8, 16>,

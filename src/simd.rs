@@ -310,6 +310,21 @@ fn plain_prefix_n<U: Unit, const N: usize>(data: &[U]) -> usize {
 		}
 		i += N;
 	}
+	// What is left a narrow window at a time, the last window overlapping
+	// units already found plain.
+	while i + CMP_WIDE <= data.len() {
+		let v = Simd::<U, CMP_WIDE>::from_slice(&data[i..i + CMP_WIDE]);
+		if let Some(p) = U::non_plain_index(v) {
+			return i + p;
+		}
+		i += CMP_WIDE;
+	}
+	if i < data.len()
+		&& let Some(start) = data.len().checked_sub(CMP_WIDE)
+	{
+		let v = Simd::<U, CMP_WIDE>::from_slice(&data[start..]);
+		return U::non_plain_index(v).map_or(data.len(), |p| start + p);
+	}
 	while i < data.len() && (0x20..=0x7e).contains(&data[i].to_u32()) {
 		i += 1;
 	}
